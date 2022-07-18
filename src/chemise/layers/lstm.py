@@ -30,3 +30,24 @@ class SimpleLSTM(nn.Module):
             jax.random.PRNGKey(0), batch_dims, hidden_size)
 
 
+class AutoregLSTM(nn.Module):
+    output_layer: nn.Dense = None
+
+    def step(self, cell):
+        def _f(carry_pred, x):
+            carry, prev_pred = carry_pred
+            in_x = jnp.concatenate(x, prev_pred, axis=-1)
+            carry, y = cell(carry, in_x)
+            y = self.output_layer(y)
+            return (carry, y), y
+        return _f
+
+    @nn.compact
+    def __call__(self, carry, x):
+        cell = nn.OptimizedLSTMCell()
+        carry, x = nn.scan(self.step(cell),
+                            variable_broadcast='params',
+                            in_axes=1, out_axes=1,
+                            split_rngs={'params': False}
+                            )(carry, x)
+        return carry, x
