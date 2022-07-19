@@ -134,6 +134,6 @@ class BasicTrainer:
 
             # End of epoc metrics
             mean_loss = np.mean(track_loss)
-            val_loss = "Unknown" if val_data else np.mean(val_loss)
+            val_loss = "Unknown" if val_data is None else np.mean(val_loss)
             print(f"{e}:  {mean_loss} val {val_loss}")
 
