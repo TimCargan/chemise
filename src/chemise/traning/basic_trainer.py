@@ -103,7 +103,7 @@ class BasicTrainer:
     def fit(self, data, val_data=None, num_epochs=1):
         cardinality = int(data.cardinality())
         prog_steps = cardinality if cardinality > 0 else None
-        con = Console(color_system="windows")
+        con = Console(color_system="windows", force_terminal=True)
 
         for e in range(num_epochs):
             np_d = data.as_numpy_iterator()
