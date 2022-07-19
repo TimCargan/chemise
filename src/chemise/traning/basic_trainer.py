@@ -50,6 +50,9 @@ class BasicTrainer:
             for i in np_d:
                 self.state, loss = self.train_step(self.state, self.loss_fn, i)
                 track_loss.append(loss["loss"])
+                if self.state.step % 10 == 0:
+                    mean_loss = np.mean(track_loss)
+                    print(f"{e}: {self.state.step} -  {mean_loss}")
 
             mean_loss = np.mean(track_loss)
             print(f"{e}:  {mean_loss}")
