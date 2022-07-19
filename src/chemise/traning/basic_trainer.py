@@ -3,7 +3,8 @@ from typing import Callable
 import numpy as np
 from flax.training.train_state import TrainState
 import jax
-from rich.progress import Progress, TextColumn, TransferSpeedColumn, ProgressColumn
+from rich.console import Console
+from rich.progress import Progress, TextColumn, ProgressColumn
 from rich.text import Text
 
 def seconds_pretty(seconds):
@@ -71,17 +72,24 @@ class BasicTrainer:
         return state, metrics
 
     def fit(self, data, num_epochs=1):
-        print(int(data.cardinality()))
+        cardinality = int(data.cardinality())
+        prog_steps = cardinality if cardinality > 0 else None
+        con = Console(color_system="windows")
         for e in range(num_epochs):
             np_d = data.as_numpy_iterator()
-            with Progress(*Progress.get_default_columns(), StepTime(), TextColumn("-- Loss: {task.fields[loss]}"), auto_refresh=False) as progress:
+            with Progress(*Progress.get_default_columns(), StepTime(), TextColumn("-- Loss: {task.fields[loss]}"), auto_refresh=False, console=con) as progress:
+
                 track_loss = []
-                task = progress.add_task(f"[green]Epoch {e}: ", total=int(data.cardinality()), loss=69)
+                task = progress.add_task(f"[green]Epoch {e}: ", total=prog_steps, loss=69)
                 for i in np_d:
                     self.state, loss = self.train_step(self.state, self.loss_fn, i)
                     track_loss.append(loss["loss"])
                     progress.update(task, advance=1, loss=loss["loss"])
                     progress.refresh()
+
+            # Update after first epoch sine they should all be the same size
+            if prog_steps is None:
+                prog_steps = len(track_loss)
 
             mean_loss = np.mean(track_loss)
             print(f"{e}:  {mean_loss}")
