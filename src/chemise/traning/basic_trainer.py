@@ -1,11 +1,38 @@
 from dataclasses import dataclass
 from typing import Callable
-
 import numpy as np
-import optax
 from flax.training.train_state import TrainState
 import jax
+from rich.progress import Progress, TextColumn, TransferSpeedColumn, ProgressColumn
+from rich.text import Text
 
+def seconds_pretty(seconds):
+    if seconds > 1:
+        s = round(seconds, 3)
+        return f"{s}s"
+
+    mill = seconds * 1e3
+    if mill > 1:
+        s = round(mill, 3)
+        return f"{s}ms"
+
+    nano = mill * 1e3
+    s = round(nano, 3)
+    return f"{s}ns"
+
+
+class StepTime(ProgressColumn):
+    """Renders human readable transfer speed."""
+
+    def render(self, task) -> Text:
+        """Show data transfer speed."""
+        speed = task.finished_speed or task.speed
+        if speed is None:
+            return Text("?", style="progress.data.speed")
+
+        speed = 1 / speed # Convert from steps per second to step time
+        speed = seconds_pretty(speed)
+        return Text(f"{speed}/step", style="progress.data.speed")
 
 @dataclass
 class BasicTrainer:
@@ -44,15 +71,17 @@ class BasicTrainer:
         return state, metrics
 
     def fit(self, data, num_epochs=1):
+        print(int(data.cardinality()))
         for e in range(num_epochs):
             np_d = data.as_numpy_iterator()
-            track_loss = []
-            for i in np_d:
-                self.state, loss = self.train_step(self.state, self.loss_fn, i)
-                track_loss.append(loss["loss"])
-                if self.state.step % 10 == 0:
-                    mean_loss = np.mean(track_loss)
-                    print(f"{e}: {self.state.step} -  {mean_loss}")
+            with Progress(*Progress.get_default_columns(), StepTime(), TextColumn("-- Loss: {task.fields[loss]}"), auto_refresh=False) as progress:
+                track_loss = []
+                task = progress.add_task(f"[green]Epoch {e}: ", total=int(data.cardinality()), loss=69)
+                for i in np_d:
+                    self.state, loss = self.train_step(self.state, self.loss_fn, i)
+                    track_loss.append(loss["loss"])
+                    progress.update(task, advance=1, loss=loss["loss"])
+                    progress.refresh()
 
             mean_loss = np.mean(track_loss)
             print(f"{e}:  {mean_loss}")
