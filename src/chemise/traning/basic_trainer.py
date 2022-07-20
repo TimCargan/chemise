@@ -114,14 +114,14 @@ class BasicTrainer:
         return {"loss": loss}
 
     def fit(self, data, val_data=None, num_epochs=1):
+        con = Console(color_system="windows", force_interactive=True)
+
         train_cardinality = int(data.cardinality())
         train_steps = train_cardinality if train_cardinality > 0 else None
 
         if val_data:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
-
-        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
 
         with make_progress(con) as progress:
             epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
