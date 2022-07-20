@@ -46,7 +46,7 @@ class StepTime(ProgressColumn):
         return Text(f"{speed}/step", style="progress.data.speed")
 
 
-def make_progress(console: Console):
+def make_progress(console: Console) -> Progress:
     return Progress(TextColumn("[progress.description]{task.description}"),
                     MofNCompleteColumn(),
                     BarColumn(),
@@ -56,7 +56,7 @@ def make_progress(console: Console):
                     auto_refresh=True, console=console, refresh_per_second=0.5)
 
 
-def make_metric_string(metrics: dict[str, str | ndarray | float]):
+def make_metric_string(metrics: dict[str, str | ndarray | float]) -> str:
     def value_format(v):
         if isinstance(v, str):
             return v
@@ -119,15 +119,20 @@ class BasicTrainer:
         train_cardinality = int(data.cardinality())
         train_steps = train_cardinality if train_cardinality > 0 else None
 
+        eval_steps = None
         if val_data:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         with make_progress(con) as progress:
             epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
+            train_task = progress.add_task(f"Train", completed=0, total=train_steps, metrics="", visible=True)
+            val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
+            dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
+
             for e in range(num_epochs):
-                train_task = progress.add_task(f"Train", total=train_steps, metrics="")
                 track_loss = []
+                progress.reset(train_task, total=train_steps, visible=True)
                 for i in data.as_numpy_iterator():
                     self.state, loss = self.train_step(self.state, i)
                     track_loss.append(loss["loss"])
@@ -135,14 +140,14 @@ class BasicTrainer:
 
                 # Eval model
                 if val_data:
-                    val_prog = progress.add_task(f"Eval", total=eval_steps, metrics="")
+                    progress.reset(val_prog, total=eval_steps, visible=True)
                     val_loss = []
                     for i in val_data.as_numpy_iterator():
                         loss = self.eval_step(self.state, i)
                         val_loss.append(loss["loss"])
-                        progress.update(val_prog, advance=1)
+                        progress.update(val_prog, advance=1, visible=True)
 
-                    progress.update(val_prog, visible=False)
+                progress.update(val_prog, visible=False)
                 progress.update(train_task, visible=False)
 
                 # Update after first epoch sine they should all be the same size
