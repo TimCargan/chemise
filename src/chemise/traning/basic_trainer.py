@@ -53,7 +53,7 @@ def make_progress(console: Console):
                     TimeRemainingColumn(compact=True, elapsed_when_finished=True),
                     StepTime(),
                     TextColumn("{task.fields[metrics]}"),
-                    auto_refresh=False, console=console, refresh_per_second=1)
+                    auto_refresh=True, console=console, refresh_per_second=0.5)
 
 
 def make_metric_string(metrics: dict[str, str | ndarray | float]):
@@ -131,7 +131,7 @@ class BasicTrainer:
                 for i in data.as_numpy_iterator():
                     self.state, loss = self.train_step(self.state, i)
                     track_loss.append(loss["loss"])
-                    progress.update(train_task, advance=1, metrics=make_metric_string(loss), refresh=True)
+                    progress.update(train_task, advance=1, metrics=make_metric_string(loss))
 
                 # Eval model
                 if val_data:
@@ -140,9 +140,9 @@ class BasicTrainer:
                     for i in val_data.as_numpy_iterator():
                         loss = self.eval_step(self.state, i)
                         val_loss.append(loss["loss"])
-                        progress.update(val_prog, advance=1, refresh=True)
+                        progress.update(val_prog, advance=1)
 
-                    progress.update(val_prog, completed=True, visible=False)
+                    progress.update(val_prog, visible=False)
                 progress.update(train_task, visible=False)
 
                 # Update after first epoch sine they should all be the same size
