@@ -11,7 +11,7 @@ jax.config.parse_flags_with_absl()
 class LstmTest(parameterized.TestCase):
 
     def test_seconds_pretty(self):
-        self.assertEqual("12s", basic_trainer.seconds_pretty(12.0001))
+        self.assertEqual(" 12s", basic_trainer.seconds_pretty(12.0001))
         self.assertEqual("1200s", basic_trainer.seconds_pretty(1200))
         self.assertEqual(" 12ms",   basic_trainer.seconds_pretty(0.012001))
         self.assertEqual("120µs",   basic_trainer.seconds_pretty(0.000120))
