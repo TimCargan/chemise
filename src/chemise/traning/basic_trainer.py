@@ -121,7 +121,7 @@ class BasicTrainer:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
-        con = Console(color_system="windows", force_interactive=True)
+        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
 
         with make_progress(con) as progress:
             epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
@@ -155,6 +155,6 @@ class BasicTrainer:
                 # End of epoc metrics
                 mean_loss = np.mean(track_loss)
                 val_loss = "Unknown" if val_data is None else np.mean(val_loss)
-                con.log(f"{e}: {mean_loss} val {val_loss}")
+                # con.log(f"{e}: {mean_loss} val {val_loss}")
                 met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
                 progress.update(epoch_task, advance=1, metrics=met, refresh=True)
