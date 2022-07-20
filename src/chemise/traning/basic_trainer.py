@@ -114,7 +114,7 @@ class BasicTrainer:
         return {"loss": loss}
 
     def fit(self, data, val_data=None, num_epochs=1):
-        con = Console(color_system="windows", force_interactive=True)
+        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
 
         train_cardinality = int(data.cardinality())
         train_steps = train_cardinality if train_cardinality > 0 else None
