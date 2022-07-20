@@ -121,7 +121,7 @@ class BasicTrainer:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
-        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
+        con = Console(color_system="windows", force_interactive=True)
 
         with make_progress(con) as progress:
             epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
