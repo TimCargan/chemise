@@ -53,7 +53,7 @@ def make_progress(console: Console) -> Progress:
                     TimeRemainingColumn(compact=True, elapsed_when_finished=True),
                     StepTime(),
                     TextColumn("{task.fields[metrics]}"),
-                    auto_refresh=True, console=console, refresh_per_second=0.5)
+                    auto_refresh=True, console=console, refresh_per_second=2, speed_estimate_period=3600 * 24)
 
 
 def make_metric_string(metrics: dict[str, str | ndarray | float]) -> str:
@@ -124,42 +124,49 @@ class BasicTrainer:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
-        with make_progress(con) as progress:
-            epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
-            train_task = progress.add_task(f"Train", completed=0, total=train_steps, metrics="", visible=True)
-            val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
-            dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
+        progress = make_progress(con)  # Don't use the context manager to reduce intent, manually call start and stop
+        progress.start()
+        epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
+        train_task = progress.add_task(f"Train", completed=0, total=train_steps, metrics="", visible=True)
+        val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
+        dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
 
-            for e in range(num_epochs):
-                track_loss = []
-                progress.reset(train_task, total=train_steps, visible=True)
-                for i in data.as_numpy_iterator():
-                    self.state, loss = self.train_step(self.state, i)
-                    track_loss.append(loss["loss"])
-                    progress.update(train_task, advance=1, metrics=make_metric_string(loss))
+        for e in range(num_epochs):
+            track_loss = []
+            progress.reset(train_task, total=train_steps, visible=True)
+            for batch in data.as_numpy_iterator():
+                self.state, metrics = self.train_step(self.state, batch)
+                track_loss.append(metrics["loss"])
+                progress.update(train_task, advance=1, metrics=make_metric_string(metrics))
 
-                # Eval model
-                if val_data:
-                    progress.reset(val_prog, total=eval_steps, visible=True)
-                    val_loss = []
-                    for i in val_data.as_numpy_iterator():
-                        loss = self.eval_step(self.state, i)
-                        val_loss.append(loss["loss"])
-                        progress.update(val_prog, advance=1, visible=True)
+            # Update after first epoch sine they should all be the same size
+            if train_steps is None:
+                train_steps = len(track_loss)
 
-                progress.update(val_prog, visible=False)
-                progress.update(train_task, visible=False)
+            # Eval model - Only run if there is val_data
+            if val_data:
+                progress.reset(val_prog, total=eval_steps, visible=True)
+                val_loss = []
+                for i in val_data.as_numpy_iterator():
+                    loss = self.eval_step(self.state, i)
+                    val_loss.append(loss["loss"])
+                    progress.update(val_prog, advance=1, visible=True)
 
-                # Update after first epoch sine they should all be the same size
-                if train_steps is None:
-                    train_steps = len(track_loss)
-
-                if eval_steps is None:
+                # Update after first epoch sine they should be the same size
+                if val_data and eval_steps is None:
                     eval_steps = len(val_loss)
 
-                # End of epoc metrics
-                mean_loss = np.mean(track_loss)
-                val_loss = "Unknown" if val_data is None else np.mean(val_loss)
-                # con.log(f"{e}: {mean_loss} val {val_loss}")
-                met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
-                progress.update(epoch_task, advance=1, metrics=met, refresh=True)
+            progress.update(val_prog, visible=False)
+            progress.update(train_task, visible=False)
+
+            # End of epoc metrics
+            mean_loss = np.mean(track_loss)
+            val_loss = "Unknown" if val_data is None else np.mean(val_loss)
+            met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
+            duration = progress.tasks[train_task].finished_time
+            con.log(f"Epoch:{e} - {duration}s  {met}")
+            progress.update(epoch_task, advance=1, metrics=met, refresh=True)
+
+        progress.stop()  # Close the progress since we aren't in a contex
+        return
+
