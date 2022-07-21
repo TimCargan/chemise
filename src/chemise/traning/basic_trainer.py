@@ -142,6 +142,7 @@ class BasicTrainer:
             # Update after first epoch sine they should all be the same size
             if train_steps is None:
                 train_steps = len(track_loss)
+                progress.update(train_task, completed=train_steps, total=train_steps)
 
             # Eval model - Only run if there is val_data
             if val_data:
@@ -164,7 +165,7 @@ class BasicTrainer:
             val_loss = "Unknown" if val_data is None else np.mean(val_loss)
             met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
             duration = progress.tasks[train_task].finished_time
-            con.log(f"Epoch:{e} - {duration}s  {met}")
+            con.log(f"Epoch:{e} - {duration:.0f}s  {met}")
             progress.update(epoch_task, advance=1, metrics=met, refresh=True)
 
         progress.stop()  # Close the progress since we aren't in a contex
