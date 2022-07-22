@@ -3,7 +3,7 @@ from absl.testing import parameterized
 import jax
 import jax.test_util
 import numpy as np
-
+import flax.linen as nn
 import lstm
 
 # Parse absl flags test_srcdir and test_tmpdir.
@@ -18,10 +18,11 @@ class LstmTest(parameterized.TestCase):
         seq_len = 3
         embedding_size = 4
         hidden_size = 5
-        model = lstm.SimpleLSTM()
+        cell = nn.OptimizedLSTMCell()
+        model = lstm.SimpleLSTM(cell=cell)
         rng = jax.random.PRNGKey(0)
         inputs = np.random.RandomState(0).normal(size=[batch_size, seq_len, embedding_size])
-        initial_state = lstm.SimpleLSTM.initialize_carry((batch_size,), hidden_size)
+        initial_state = cell.initialize_carry(rng, (batch_size,), hidden_size)
         (_, output), _ = model.init_with_output(rng, initial_state, inputs)
         self.assertEqual((batch_size, seq_len, hidden_size), output.shape)
 
