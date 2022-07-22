@@ -1,15 +1,15 @@
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 from functools import partial
-from typing import Callable, Optional
+from absl import logging
 import numpy as np
-from flax.training.train_state import TrainState
 import jax
-from numpy import ndarray
+from flax.training.train_state import TrainState
 from rich.console import Console
-from rich.progress import Progress, TextColumn, ProgressColumn, BarColumn, Column, TimeElapsedColumn, \
-    TimeRemainingColumn, MofNCompleteColumn
+from rich.progress import Progress, TextColumn, ProgressColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.text import Text
+from chemise.callbacks.abc_callback import Callback, CallbackRunner
 
 
 def seconds_pretty(seconds:float) -> str:
@@ -56,11 +56,21 @@ def make_progress(console: Console) -> Progress:
                     auto_refresh=True, console=console, refresh_per_second=2, speed_estimate_period=3600 * 24)
 
 
-def make_metric_string(metrics: dict[str, str | ndarray | float]) -> str:
+def make_metric_string(metrics: dict[str, str | np.ndarray | float], precision=4) -> str:
+    """
+    Make a string out of a metric dict
+    :param metrics:
+    :param precision:
+    :return:
+    """
     def value_format(v):
         if isinstance(v, str):
             return v
-        return f"{v:.3f}"
+        try:
+            fv = float(v)
+            return f"{fv:.{precision}}"
+        except TypeError:
+            raise TypeError("Can only log scaler variables")
 
     met_string = "{}: {}"
     return f"-- {', '.join([met_string.format(k, value_format(v)) for k, v in metrics.items()])}"
@@ -78,6 +88,7 @@ class BasicTrainer:
 
     state: TrainState = field(compare=False)
     loss_fn: Callable
+    callbacks: [Callback] = field(default_factory=list, compare=False)
 
     @partial(jax.jit, static_argnums=(0,))
     def train_step(self, state, batch):
@@ -131,13 +142,19 @@ class BasicTrainer:
         val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
         dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
 
+        callbacks = CallbackRunner(callbacks=self.callbacks)
+        callbacks.on_train_start(self)
+
         for e in range(num_epochs):
+            callbacks.on_epoch_start(self)
             track_loss = []
             progress.reset(train_task, total=train_steps, visible=True)
             for batch in data.as_numpy_iterator():
+                callbacks.on_batch_start(self)
                 self.state, metrics = self.train_step(self.state, batch)
                 track_loss.append(metrics["loss"])
                 progress.update(train_task, advance=1, metrics=make_metric_string(metrics))
+                callbacks.on_batch_end(self)
 
             # Update after first epoch sine they should all be the same size
             if train_steps is None:
@@ -165,9 +182,12 @@ class BasicTrainer:
             val_loss = "Unknown" if val_data is None else np.mean(val_loss)
             met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
             duration = progress.tasks[train_task].finished_time
-            con.log(f"Epoch:{e} - {duration:.0f}s  {met}")
+            logging.info(f"Epoch:{e} - {duration:.0f}s  {met}")
             progress.update(epoch_task, advance=1, metrics=met, refresh=True)
+            # End of epoch callbacks
+            callbacks.on_epoch_end(self)
 
+        callbacks.on_train_end(self)
         progress.stop()  # Close the progress since we aren't in a contex
         return
 
