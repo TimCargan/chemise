@@ -1,70 +1,49 @@
+import operator
 import time
 from dataclasses import dataclass, field
-from functools import partial
-from typing import Callable, Optional
+from typing import Callable, Any, Tuple
+from functools import partial, reduce
+
 import numpy as np
-from flax.training.train_state import TrainState
+from absl import logging
 import jax
-from numpy import ndarray
+from flax.training.train_state import TrainState
 from rich.console import Console
-from rich.progress import Progress, TextColumn, ProgressColumn, BarColumn, Column, TimeElapsedColumn, \
-    TimeRemainingColumn, MofNCompleteColumn
-from rich.text import Text
+from rich.layout import Layout
+from rich.live import Live
+from chemise.callbacks.abc_callback import Callback, CallbackRunner, CallbackFn
+from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 
-def seconds_pretty(seconds:float) -> str:
+def empty_train_hist():
+    return {"epochs": [], "train": []}
+
+
+def make_layout():
+    layout = Layout(name="root")
+    layout.split(
+        Layout(name="graph", ratio=1),
+        Layout(name="progbar", size=5),
+    )
+    return layout
+
+
+def sanity_check(data):
     """
-    Format the number of seconds to a pretty string in most significant  e.g
-    0.012 -> 12ms
-    12.32 -> 12s
-    :param seconds:
-    :return: A string of the number of seconds in order of magnitude form
+    Check to see if the input and label data looks correct, i.e not all the same value
+    :param data:
+    :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
-
-    if seconds > 1:
-        return f"{seconds:3.0f}s"
-
-    second_exp = seconds
-    for e in ["ms", "µs", "ns"]:
-        second_exp = second_exp * 1e3
-        if second_exp > 1:
-            return f"{second_exp:3.0f}{e}"
-
-    return f"{second_exp:3.3f}ns"
-
-class StepTime(ProgressColumn):
-    """Renders human readable transfer speed."""
-
-    def render(self, task) -> Text:
-        """Show data transfer speed."""
-        speed = task.finished_speed or task.speed
-        if speed is None:
-            return Text("?", style="progress.data.speed")
-
-        speed = 1 / speed  # Convert from steps per second to seconds per step
-        speed = seconds_pretty(speed)
-        return Text(f"{speed}/step", style="progress.data.speed")
+    for d in data.take(1).as_numpy_iterator():
+        inputs = {f"I_{k}": np.all(v == v[0], axis=None) for k, v in d[0].items()}
+        r_inputs = reduce(operator.or_, inputs.values(), False)
+        labels = {f"O_{k}": np.all(v == v[0], axis=None) for k, v in d[1].items()}
+        r_labels = reduce(operator.or_, labels.values(), False)
+    is_good = not (r_inputs or r_labels)
+    return is_good, dict(**inputs, **labels)
 
 
-def make_progress(console: Console) -> Progress:
-    return Progress(TextColumn("[progress.description]{task.description}"),
-                    MofNCompleteColumn(),
-                    BarColumn(),
-                    TimeRemainingColumn(compact=True, elapsed_when_finished=True),
-                    StepTime(),
-                    TextColumn("{task.fields[metrics]}"),
-                    auto_refresh=True, console=console, refresh_per_second=2, speed_estimate_period=3600 * 24)
-
-
-def make_metric_string(metrics: dict[str, str | ndarray | float]) -> str:
-    def value_format(v):
-        if isinstance(v, str):
-            return v
-        return f"{v:.3f}"
-
-    met_string = "{}: {}"
-    return f"-- {', '.join([met_string.format(k, value_format(v)) for k, v in metrics.items()])}"
-
+State_Result = Tuple[TrainState, dict]
 
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
@@ -78,9 +57,12 @@ class BasicTrainer:
 
     state: TrainState = field(compare=False)
     loss_fn: Callable
+    callbacks: [Callback] = field(default_factory=list, compare=False)
+    train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
+    train_window: Layout = field(default_factory=make_layout, compare=False)
 
     @partial(jax.jit, static_argnums=(0,))
-    def train_step(self, state, batch):
+    def train_step(self, state: TrainState, batch) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -90,6 +72,7 @@ class BasicTrainer:
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
+
         def step(params):
             y_pred = state.apply_fn({'params': params}, batch[0])
             loss = self.loss_fn(batch[1], y_pred)
@@ -101,73 +84,106 @@ class BasicTrainer:
         metrics = {"loss": loss}
         return state, metrics
 
-
     @partial(jax.jit, static_argnums=(0,))
-    def pred_step(self, state, batch):
+    def pred_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         return y_pred
 
     @partial(jax.jit, static_argnums=(0,))
-    def eval_step(self, state, batch):
+    def test_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         loss = self.loss_fn(batch[1], y_pred)
         return {"loss": loss}
 
-    def fit(self, data, val_data=None, num_epochs=1):
-        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
+    def _stateful_step_runner(self, data, step_fn: Callable[[TrainState, Any], State_Result], hist: list,
+                              start_cb: CallbackFn, step_start_cb: CallbackFn,
+                              end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
+        """
+        A standard step call, helpful to reduce code in the main train loops
+        :param data: data to iterate over
+        :param step_fn: the step function to call, must be
+        :param hist:
+        :param start_cb:
+        :param step_start_cb:
+        :param end_cb:
+        :param step_end_cb:
+        :return:
+        """
+        start_cb(self)
+        for batch in data.as_numpy_iterator():
+            step_start_cb(self)
+            self.state, metrics = step_fn(self.state, batch)
+            hist.append(metrics)
+            step_end_cb(self)
+        end_cb(self)
+
+    def fit(self, data, val_data=None, num_epochs=1, interactive=True):
+        self.num_epochs = num_epochs
 
         train_cardinality = int(data.cardinality())
-        train_steps = train_cardinality if train_cardinality > 0 else None
+        self.train_steps = train_cardinality if train_cardinality > 0 else None
 
-        eval_steps = None
+        self.eval_steps = None
         if val_data:
             eval_cardinality = int(val_data.cardinality())
-            eval_steps = eval_cardinality if eval_cardinality > 0 else None
+            self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
-        progress = make_progress(con)  # Don't use the context manager to reduce intent, manually call start and stop
-        progress.start()
-        epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
-        train_task = progress.add_task(f"Train", completed=0, total=train_steps, metrics="", visible=True)
-        val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
-        dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
+        # Check to make sure the data isn't all the same value. It's happened, it's a pain
+        pass_sanity, input_errors = sanity_check(data)
+        if pass_sanity:
+            logging.info("Sanity check passed: %s", input_errors)
+        else:
+            logging.warning("Sanity check Failed: %s", input_errors)
 
-        for e in range(num_epochs):
-            track_loss = []
-            progress.reset(train_task, total=train_steps, visible=True)
-            for batch in data.as_numpy_iterator():
-                self.state, metrics = self.train_step(self.state, batch)
-                track_loss.append(metrics["loss"])
-                progress.update(train_task, advance=1, metrics=make_metric_string(metrics))
+        con = Console(color_system="windows", force_interactive=interactive, force_terminal=interactive)
+        live = Live(self.train_window, console=con)
+        live.start()
+
+        callbacks = CallbackRunner(callbacks=self.callbacks)
+        callbacks.on_fit_start(self)
+
+        for e in range(self.num_epochs):
+            epoch_start_time = time.monotonic()
+            callbacks.on_epoch_start(self)
+            self.train_hist["epochs"].append({"train": [], "test": []})
+
+            # Run Train Step
+            self._stateful_step_runner(data, self.train_step, self.train_hist["epochs"][-1]["train"],
+                                       callbacks.on_train_start, callbacks.on_train_batch_start,
+                                       callbacks.on_train_end, callbacks.on_train_batch_end)
 
             # Update after first epoch sine they should all be the same size
-            if train_steps is None:
-                train_steps = len(track_loss)
-                progress.update(train_task, completed=train_steps, total=train_steps)
+            if self.train_steps is None:
+                self.train_steps = len(self.train_hist["epochs"][-1]["train"])
 
-            # Eval model - Only run if there is val_data
+            # Test model - Only run if there is val_data
             if val_data:
-                progress.reset(val_prog, total=eval_steps, visible=True)
-                val_loss = []
-                for i in val_data.as_numpy_iterator():
-                    loss = self.eval_step(self.state, i)
-                    val_loss.append(loss["loss"])
-                    progress.update(val_prog, advance=1, visible=True)
+                # Wrap test step in lambda, so it returns state and result to work with the stateful step pattern
+                state_test_step = lambda state, batch: (state, self.test_step(state, batch))
+                self._stateful_step_runner(data, state_test_step, self.train_hist["epochs"][-1]["test"],
+                                           callbacks.on_test_start, callbacks.on_test_batch_start,
+                                           callbacks.on_test_end, callbacks.on_test_batch_end)
 
                 # Update after first epoch sine they should be the same size
-                if val_data and eval_steps is None:
-                    eval_steps = len(val_loss)
-
-            progress.update(val_prog, visible=False)
-            progress.update(train_task, visible=False)
+                if self.eval_steps is None:
+                    self.eval_steps = len(self.train_hist["epochs"][-1]["test"])
 
             # End of epoc metrics
-            mean_loss = np.mean(track_loss)
-            val_loss = "Unknown" if val_data is None else np.mean(val_loss)
-            met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
-            duration = progress.tasks[train_task].finished_time
-            con.log(f"Epoch:{e} - {duration:.0f}s  {met}")
-            progress.update(epoch_task, advance=1, metrics=met, refresh=True)
+            mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
+            mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
+            mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
+            mets = dict(**mean_train, **mean_test)
+            self.train_hist["train"].append(mets)
 
-        progress.stop()  # Close the progress since we aren't in a contex
+            # TODO: Maybe move this to a logging callback
+            met = make_metric_string(mets)
+            duration = time.monotonic() - epoch_start_time
+            duration = seconds_pretty(duration)
+            logging.info(f"Epoch:{e} - {duration}  {met}")
+
+            # End of epoch callbacks
+            callbacks.on_epoch_end(self)
+
+        callbacks.on_fit_end(self)
+        live.stop()  # Close the live window since we aren't in a contex
         return
-
