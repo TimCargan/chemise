@@ -86,12 +86,8 @@ def empty_train_state():
 def make_layout():
     layout = Layout(name="root")
     layout.split(
-        Layout(name="main", ratio=1),
-        Layout(name="buffer", size=5),
-    )
-    layout["main"].split_row(
-        Layout(name="progbar", ratio=1),
-        Layout(name="graph"),
+        Layout(name="graph", ratio=1),
+        Layout(name="progbar", size=5),
     )
     return layout
 
