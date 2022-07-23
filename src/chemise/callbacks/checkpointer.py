@@ -14,7 +14,7 @@ class Checkpointer(Callback):
 
     auto_restore: bool = False
 
-    def on_train_begin(self, trainer: BasicTrainer):
+    def on_fit_begin(self, trainer: BasicTrainer):
         if self.auto_restore:
             trainer.state = cp.restore_checkpoint(self.ckpt_dir, trainer.state)
 

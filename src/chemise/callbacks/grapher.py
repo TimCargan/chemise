@@ -48,16 +48,17 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
 
 @dataclass
 class Line(Callback):
+    window_pane: str = "graph"
 
     def __init__(self, title: str):
         self.plotter = PlotexMixin(title=title, ys={"t": [0]}, draw_fn=make_line_plot)
 
-    def on_train_start(self, basic_trainer: BasicTrainer):
-        graph = Panel(self.plotter)
-        basic_trainer.train_window["graph"].update(graph)
+    def on_fit_start(self, basic_trainer: BasicTrainer):
+        if pane := basic_trainer.train_window.get(self.window_pane):
+            pane.update(Panel(self.plotter))
 
     def on_epoch_end(self, trainer: BasicTrainer):
-        ys = list_dict_to_dict_list(trainer.train_state["train"])
+        ys = list_dict_to_dict_list(trainer.train_hist["train"])
         self.plotter.update(ys=ys)
 
 
