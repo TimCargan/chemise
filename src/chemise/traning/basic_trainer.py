@@ -1,16 +1,19 @@
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Any
 from functools import partial
 from absl import logging
 import numpy as np
 import jax
 from flax.training.train_state import TrainState
 from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
 from rich.progress import Progress, TextColumn, ProgressColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.text import Text
 from chemise.callbacks.abc_callback import Callback, CallbackRunner
-
+from chemise.utils import reduce_dicts
 
 def seconds_pretty(seconds:float) -> str:
     """
@@ -76,6 +79,22 @@ def make_metric_string(metrics: dict[str, str | np.ndarray | float], precision=4
     return f"-- {', '.join([met_string.format(k, value_format(v)) for k, v in metrics.items()])}"
 
 
+def empty_train_state():
+    return {"epoch": [], "train": []}
+
+
+def make_layout():
+    layout = Layout(name="root")
+    layout.split(
+        Layout(name="main", ratio=1),
+        Layout(name="buffer", size=5),
+    )
+    layout["main"].split_row(
+        Layout(name="progbar", ratio=1),
+        Layout(name="graph"),
+    )
+    return layout
+
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
     """
@@ -89,6 +108,8 @@ class BasicTrainer:
     state: TrainState = field(compare=False)
     loss_fn: Callable
     callbacks: [Callback] = field(default_factory=list, compare=False)
+    train_state: dict[str, list[Any]] = field(default_factory=empty_train_state, compare=False)
+    train_window: Layout = field(default_factory=Layout, compare=False)
 
     @partial(jax.jit, static_argnums=(0,))
     def train_step(self, state, batch):
@@ -125,8 +146,6 @@ class BasicTrainer:
         return {"loss": loss}
 
     def fit(self, data, val_data=None, num_epochs=1):
-        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
-
         train_cardinality = int(data.cardinality())
         train_steps = train_cardinality if train_cardinality > 0 else None
 
@@ -135,30 +154,35 @@ class BasicTrainer:
             eval_cardinality = int(val_data.cardinality())
             eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
+        con = Console(color_system="windows", force_interactive=True, force_terminal=True)
+        self.train_window = make_layout()
+        live = Live(self.train_window, console=con)
+        live.start()
         progress = make_progress(con)  # Don't use the context manager to reduce intent, manually call start and stop
-        progress.start()
+        self.train_window["progbar"].update(Panel(progress))
+
         epoch_task = progress.add_task(f"Epochs", total=num_epochs, metrics="")
         train_task = progress.add_task(f"Train", completed=0, total=train_steps, metrics="", visible=True)
         val_prog = progress.add_task(f"Eval", completed=0, total=eval_steps, metrics="", visible=False)
-        dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
+        # dummy_prog = progress.add_task(f"--", total=1, metrics="")  # Make an empty line to make slurm output
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_train_start(self)
 
         for e in range(num_epochs):
             callbacks.on_epoch_start(self)
-            track_loss = []
             progress.reset(train_task, total=train_steps, visible=True)
+            self.train_state["epoch"] = []
             for batch in data.as_numpy_iterator():
                 callbacks.on_batch_start(self)
                 self.state, metrics = self.train_step(self.state, batch)
-                track_loss.append(metrics["loss"])
+                self.train_state["epoch"].append(metrics)
                 progress.update(train_task, advance=1, metrics=make_metric_string(metrics))
                 callbacks.on_batch_end(self)
 
             # Update after first epoch sine they should all be the same size
             if train_steps is None:
-                train_steps = len(track_loss)
+                train_steps = len(self.train_state["epoch"])
                 progress.update(train_task, completed=train_steps, total=train_steps)
 
             # Eval model - Only run if there is val_data
@@ -178,9 +202,11 @@ class BasicTrainer:
             progress.update(train_task, visible=False)
 
             # End of epoc metrics
-            mean_loss = np.mean(track_loss)
+            mean_loss = reduce_dicts(self.train_state["epoch"])["loss"]
             val_loss = "Unknown" if val_data is None else np.mean(val_loss)
-            met = make_metric_string({"loss": mean_loss, "val_loss": val_loss})
+            mets = {"loss": mean_loss, "val_loss": val_loss}
+            self.train_state["train"].append(mets)
+            met = make_metric_string(mets)
             duration = progress.tasks[train_task].finished_time
             logging.info(f"Epoch:{e} - {duration:.0f}s  {met}")
             progress.update(epoch_task, advance=1, metrics=met, refresh=True)
@@ -188,6 +214,6 @@ class BasicTrainer:
             callbacks.on_epoch_end(self)
 
         callbacks.on_train_end(self)
-        progress.stop()  # Close the progress since we aren't in a contex
+        live.stop()  # Close the progress since we aren't in a contex
         return
 
