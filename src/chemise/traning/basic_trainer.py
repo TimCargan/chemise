@@ -127,7 +127,7 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        reps = c if (c := jax.device_count("GPU")) > 1 else 1
+        reps = c if (c := jax.device_count("gpu")) > 1 else 1
         for batch in prefetch(data.batch(reps, drop_remainder=True)):
             step_start_cb(self)
             r_state = replicate(self.state)
