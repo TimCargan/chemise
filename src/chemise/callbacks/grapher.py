@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from math import floor
 
 import numpy as np
 from rich.ansi import AnsiDecoder
@@ -41,9 +42,9 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
     max_v = 0
 
     for n, y in ys.items():
-        if len(y) > 10:
-            min_v = v if (v := np.min(y[-8:])) < min_v else min_v
-            max_v = v if (v := np.max(y[-8:])) > max_v else max_v
+        limit = max(floor(len(y) * 0.9), 10) # 10 or the last 90% of the elements
+        min_v = v if (v := np.min(y[-limit:])) < min_v else min_v
+        max_v = v if (v := np.max(y[-limit:])) > max_v else max_v
         plt.plot(y, label=n)
     plt.plotsize(width, height)
     # plt.theme('dark')
