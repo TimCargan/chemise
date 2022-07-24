@@ -97,10 +97,10 @@ class BasicTrainer:
 
         grad_fn = jax.value_and_grad(step, has_aux=True)
         (loss, y_pred), grads = grad_fn(state.params)
-        grads = jax.lax.pmean(grads, axis_name='batch')
+        grads = jax.lax.pmean(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
-        metrics = jax.lax.pmean(metrics, axis_name='batch')
+        # metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
