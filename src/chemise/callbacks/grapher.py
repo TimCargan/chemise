@@ -14,19 +14,24 @@ from chemise.utils import list_dict_to_dict_list
 decoder = AnsiDecoder()
 
 class PlotexMixin(JupyterMixin):
+
     def __init__(self, draw_fn, title="", **kwargs):
         self.title = title
         self.kwargs = kwargs
         self.draw_fn = draw_fn
+        self.re_draw = True
 
     def update(self, **kwargs):
         self.kwargs = kwargs
+        self.re_draw = True
 
     def __rich_console__(self, console, options):
-        self.width = options.max_width or console.width
-        self.height = options.height or console.height
-        canvas = self.draw_fn(self.width, self.height, title=self.title, **self.kwargs)
-        self.rich_canvas = Group(*decoder.decode(canvas))
+        if self.re_draw:
+            self.width = options.max_width or console.width
+            self.height = options.height or console.height
+            canvas = self.draw_fn(self.width, self.height, title=self.title, **self.kwargs)
+            self.rich_canvas = Group(*decoder.decode(canvas))
+            self.re_draw = False
         yield self.rich_canvas
 
 def make_line_plot(width, height, title="", xs=None, ys=None):
