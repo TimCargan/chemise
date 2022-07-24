@@ -77,7 +77,7 @@ class BasicTrainer:
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def train_step(self, state: TrainState, batch) -> State_Result:
         """
         Train for a single step.
@@ -97,16 +97,18 @@ class BasicTrainer:
 
         grad_fn = jax.value_and_grad(step, has_aux=True)
         (loss, y_pred), grads = grad_fn(state.params)
+        grads = jax.lax.pmean(grads, axis_name='batch')
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
+        metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def pred_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         return y_pred
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def test_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         loss = self.loss_fn(batch[1], y_pred)
@@ -127,7 +129,9 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        reps = c if (c := jax.device_count("gpu")) > 1 else 1
+        platform = jax.default_backend()
+        reps = jax.device_count(platform)
+        logging.debug("Running on %s with %d devices", platform, reps)
         for batch in prefetch(data.batch(reps, drop_remainder=True)):
             step_start_cb(self)
             r_state = replicate(self.state)
