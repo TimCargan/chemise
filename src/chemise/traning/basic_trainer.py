@@ -1,3 +1,4 @@
+from __future__ import annotations
 import operator
 import time
 from dataclasses import dataclass, field
@@ -7,10 +8,12 @@ from functools import partial, reduce
 import numpy as np
 from absl import logging
 import jax
+from flax.jax_utils import prefetch_to_device, replicate, unreplicate
 from flax.training.train_state import TrainState
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, CallbackFn
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
@@ -19,7 +22,7 @@ def empty_train_hist():
     return {"epochs": [], "train": []}
 
 
-def make_layout():
+def make_default_layout():
     layout = Layout(name="root")
     layout.split(
         Layout(name="graph", ratio=1),
@@ -42,6 +45,18 @@ def sanity_check(data):
     is_good = not (r_inputs or r_labels)
     return is_good, dict(**inputs, **labels)
 
+def prefetch(dataset, n_prefetch=1):
+    # Taken from: https://github.com/google-research/vision_transformer/blob/master/vit_jax/input_pipeline.py
+    ds_iter = iter(dataset)
+    ds_iter = map(lambda x: jax.tree_map(lambda t: np.asarray(memoryview(t)), x),
+                  ds_iter)
+    if n_prefetch:
+        ds_iter = prefetch_to_device(ds_iter, n_prefetch)
+    return ds_iter
+
+@jax.tree_util.Partial
+def no_metrics_fn(y, y_hat):
+    return {}
 
 State_Result = Tuple[TrainState, dict]
 
@@ -52,16 +67,17 @@ class BasicTrainer:
     We want to have a few basic methods
      - Fit
      - Predict
-     - Transform - same as predict but just add the predictions the input data
+     - TODO: Transform - same as predict but just add the predictions the input data
     """
 
     state: TrainState = field(compare=False)
-    loss_fn: Callable
+    loss_fn: Callable[[Any, Any], dict]
+    metrics_fn: Callable[[Any, Any], dict] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
-    train_window: Layout = field(default_factory=make_layout, compare=False)
+    train_window: Layout = field(default_factory=make_default_layout, compare=False)
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,))
     def train_step(self, state: TrainState, batch) -> State_Result:
         """
         Train for a single step.
@@ -72,24 +88,25 @@ class BasicTrainer:
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-
+        x = batch[0]
+        y = batch[1]
         def step(params):
-            y_pred = state.apply_fn({'params': params}, batch[0])
-            loss = self.loss_fn(batch[1], y_pred)
-            return loss
+            y_pred = state.apply_fn({'params': params}, x)
+            loss = self.loss_fn(y, y_pred)
+            return loss, y_pred
 
-        grad_fn = jax.value_and_grad(step, has_aux=False)
-        loss, grads = grad_fn(state.params)
+        grad_fn = jax.value_and_grad(step, has_aux=True)
+        (loss, y_pred), grads = grad_fn(state.params)
         state = state.apply_gradients(grads=grads)
-        metrics = {"loss": loss}
+        metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         return state, metrics
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,))
     def pred_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         return y_pred
 
-    @partial(jax.jit, static_argnums=(0,))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,))
     def test_step(self, state: TrainState, batch):
         y_pred = state.apply_fn({'params': state.params}, batch[0])
         loss = self.loss_fn(batch[1], y_pred)
@@ -110,9 +127,11 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        for batch in data.as_numpy_iterator():
+        for batch in prefetch(data.batch(1, drop_remainder=True)):
             step_start_cb(self)
-            self.state, metrics = step_fn(self.state, batch)
+            r_state = replicate(self.state)
+            r_state, metrics = step_fn(r_state, batch)
+            self.state = unreplicate(r_state)
             hist.append(metrics)
             step_end_cb(self)
         end_cb(self)
