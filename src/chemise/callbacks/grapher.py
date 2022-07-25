@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from math import floor
 
@@ -9,7 +10,7 @@ from rich.panel import Panel
 import plotext as plt
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning import BasicTrainer
+from chemise.traning.basic_trainer import BasicTrainer
 from chemise.utils import list_dict_to_dict_list
 
 decoder = AnsiDecoder()
@@ -40,7 +41,7 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
     plt.title(title)
     min_v = np.Inf
     max_v = 0
-
+    y = []
     for n, y in ys.items():
         limit = max(floor(len(y) * 0.9), 10) # 10 or the last 90% of the elements
         min_v = v if (v := np.min(y[-limit:])) < min_v else min_v
