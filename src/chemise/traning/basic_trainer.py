@@ -4,13 +4,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Any, Tuple
 from functools import partial, reduce
-
-import numpy as np
-from tensorflow import data as tfd
 from absl import logging
+
+
 import jax
+from jax import numpy as jnp
+import numpy as np
+from jaxtyping import n
+from jaxtyping.pytree_type import PyTree
 from flax.jax_utils import prefetch_to_device, replicate, unreplicate
 from flax.training.train_state import TrainState
+from tensorflow import data as tfd  # Only for typing
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -32,19 +36,19 @@ def make_default_layout():
     return layout
 
 
-def sanity_check(data):
+def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
     """
     Check to see if the input and label data looks correct, i.e not all the same value
     :param data:
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
-    for d in data.take(1).as_numpy_iterator():
-        inputs = {f"I_{k}": np.all(v == v[0], axis=None) for k, v in d[0].items()}
-        r_inputs = reduce(operator.or_, inputs.values(), False)
-        labels = {f"O_{k}": np.all(v == v[0], axis=None) for k, v in d[1].items()}
-        r_labels = reduce(operator.or_, labels.values(), False)
-    is_good = not (r_inputs or r_labels)
+    inputs = {f"I_{k}": np.all(v == v[0], axis=None) for k, v in data[0].items()}
+    r_inputs = reduce(operator.or_, inputs.values(), False)
+    labels = {f"O_{k}": np.all(v == v[0], axis=None) for k, v in data[1].items()}
+    r_labels = reduce(operator.or_, labels.values(), False)
+    is_good = np.logical_not(np.logical_or(r_inputs, r_labels))
     return is_good, dict(**inputs, **labels)
+
 
 def prefetch(dataset, n_prefetch=1):
     # Taken from: https://github.com/google-research/vision_transformer/blob/master/vit_jax/input_pipeline.py
@@ -55,11 +59,14 @@ def prefetch(dataset, n_prefetch=1):
         ds_iter = prefetch_to_device(ds_iter, n_prefetch)
     return ds_iter
 
+
 @jax.tree_util.Partial
 def no_metrics_fn(y, y_hat):
     return {}
 
+
 State_Result = Tuple[TrainState, dict]
+
 
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
@@ -78,6 +85,9 @@ class BasicTrainer:
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
 
+    # Train Config Settings
+    pre_fetch: int = 2
+
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def train_step(self, state: TrainState, batch) -> State_Result:
         """
@@ -91,6 +101,7 @@ class BasicTrainer:
         """
         x = batch[0]
         y = batch[1]
+
         @partial(jax.value_and_grad, has_aux=True)
         def step(params):
             y_pred = state.apply_fn({'params': params}, x)
@@ -115,7 +126,8 @@ class BasicTrainer:
         loss = self.loss_fn(batch[1], y_pred)
         return {"loss": loss}
 
-    def _stateful_step_runner(self, data:tfd.Dataset, step_fn: Callable[[TrainState, Any], State_Result], d_count: int, hist: list,
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Any], State_Result], d_count: int,
+                              hist: list,
                               start_cb: CallbackFn, step_start_cb: CallbackFn,
                               end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
         """
@@ -131,17 +143,16 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
-        d_iter = prefetch_to_device(d_iter, 2)
+        d_iter = prefetch_to_device(d_iter, self.pre_fetch)
         for batch in d_iter:
             step_start_cb(self)
             r_state = replicate(self.state)
             self.state, metrics = unreplicate(step_fn(r_state, batch))
-            # self.state = unreplicate(r_state)
             hist.append(metrics)
             step_end_cb(self)
         end_cb(self)
 
-    def fit(self, data, val_data=None, num_epochs=1, interactive=True):
+    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
         self.num_epochs = num_epochs
 
         train_cardinality = int(data.cardinality())
@@ -153,7 +164,8 @@ class BasicTrainer:
             self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
-        pass_sanity, input_errors = sanity_check(data)
+        first = data.as_numpy_iterator().next()
+        pass_sanity, input_errors = sanity_check(first)
         if pass_sanity:
             logging.info("Sanity check passed: %s", input_errors)
         else:
@@ -176,7 +188,7 @@ class BasicTrainer:
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
-            self._stateful_step_runner(data, self.train_step,  d_count, self.train_hist["epochs"][-1]["train"],
+            self._stateful_step_runner(data, self.train_step, d_count, self.train_hist["epochs"][-1]["train"],
                                        callbacks.on_train_start, callbacks.on_train_batch_start,
                                        callbacks.on_train_end, callbacks.on_train_batch_end)
 
@@ -188,7 +200,7 @@ class BasicTrainer:
             if val_data:
                 # Wrap test step in lambda, so it returns state and result to work with the stateful step pattern
                 state_test_step = lambda state, batch: (state, self.test_step(state, batch))
-                self._stateful_step_runner(data, state_test_step,  d_count, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(data, state_test_step, d_count, self.train_hist["epochs"][-1]["test"],
                                            callbacks.on_test_start, callbacks.on_test_batch_start,
                                            callbacks.on_test_end, callbacks.on_test_batch_end)
 
