@@ -201,7 +201,7 @@ class BasicTrainer:
             if val_data:
                 # Wrap test step in lambda, so it returns state and result to work with the stateful step pattern
                 state_test_step = lambda state, batch: (state, self.test_step(state, batch))
-                self._stateful_step_runner(data, state_test_step, d_count, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(val_data, state_test_step, d_count, self.train_hist["epochs"][-1]["test"],
                                            callbacks.on_test_start, callbacks.on_test_batch_start,
                                            callbacks.on_test_end, callbacks.on_test_batch_end)
 
