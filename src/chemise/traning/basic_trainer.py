@@ -144,13 +144,17 @@ class BasicTrainer:
         start_cb(self)
         d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
         # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
-        for batch in d_iter:
-            step_start_cb(self)
-            r_state, metrics = step_fn(r_state, batch)
-            hist.append(unreplicate(metrics))  # un-replicate metrics so we can log as we go
-            step_end_cb(self)
-        self.state = unreplicate(r_state)  # update and un-replicate, do this here to minimise reduce / broadcast calls
+        while True:
+            with jax.profiler.StepTraceAnnotation("train", step_num=self.state.step):
+                if not (batch := next(d_iter, None)):
+                    break
+                step_start_cb(self)
+                r_state, metrics = step_fn(r_state, batch)
+                self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
+                hist.append(metrics)
+                step_end_cb(self)
         end_cb(self)
 
     def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
