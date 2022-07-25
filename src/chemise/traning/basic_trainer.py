@@ -6,7 +6,7 @@ from typing import Callable, Any, Tuple
 from functools import partial, reduce
 
 import numpy as np
-import jax.numpy as jnp
+from tensorflow import data as tfd
 from absl import logging
 import jax
 from flax.jax_utils import prefetch_to_device, replicate, unreplicate
@@ -115,7 +115,7 @@ class BasicTrainer:
         loss = self.loss_fn(batch[1], y_pred)
         return {"loss": loss}
 
-    def _stateful_step_runner(self, data, step_fn: Callable[[TrainState, Any], State_Result], d_count: int, hist: list,
+    def _stateful_step_runner(self, data:tfd.Dataset, step_fn: Callable[[TrainState, Any], State_Result], d_count: int, hist: list,
                               start_cb: CallbackFn, step_start_cb: CallbackFn,
                               end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
         """
@@ -130,7 +130,7 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        for batch in prefetch(data.batch(d_count, drop_remainder=True)):
+        for batch in data.batch(d_count, drop_remainder=True).as_numpy_iterator():
             step_start_cb(self)
             r_state = replicate(self.state)
             self.state, metrics = unreplicate(step_fn(r_state, batch))
