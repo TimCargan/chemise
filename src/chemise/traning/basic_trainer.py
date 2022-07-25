@@ -144,12 +144,13 @@ class BasicTrainer:
         start_cb(self)
         d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
         d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        r_state = replicate(self.state)
         for batch in d_iter:
             step_start_cb(self)
-            r_state = replicate(self.state)
-            self.state, metrics = unreplicate(step_fn(r_state, batch))
-            hist.append(metrics)
+            r_state, metrics = step_fn(r_state, batch)
+            hist.append(unreplicate(metrics))  # un-replicate metrics so we can log as we go
             step_end_cb(self)
+        self.state = unreplicate(r_state)  # update and un-replicate, do this here to minimise reduce / broadcast calls
         end_cb(self)
 
     def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
