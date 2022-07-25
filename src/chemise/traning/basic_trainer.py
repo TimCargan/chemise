@@ -90,17 +90,17 @@ class BasicTrainer:
         """
         x = batch[0]
         y = batch[1]
+        @partial(jax.value_and_grad, has_aux=True)
         def step(params):
             y_pred = state.apply_fn({'params': params}, x)
             loss = self.loss_fn(y, y_pred)
             return loss, y_pred
 
-        grad_fn = jax.value_and_grad(step, has_aux=True)
-        (loss, y_pred), grads = grad_fn(state.params)
+        (loss, y_pred), grads = step(state.params)
         grads = jax.lax.pmean(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
-        # metrics = jax.lax.pmean(metrics, axis_name='batch')
+        metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
@@ -114,7 +114,7 @@ class BasicTrainer:
         loss = self.loss_fn(batch[1], y_pred)
         return {"loss": loss}
 
-    def _stateful_step_runner(self, data, step_fn: Callable[[TrainState, Any], State_Result], hist: list,
+    def _stateful_step_runner(self, data, step_fn: Callable[[TrainState, Any], State_Result], d_count: int, hist: list,
                               start_cb: CallbackFn, step_start_cb: CallbackFn,
                               end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
         """
@@ -129,10 +129,7 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        platform = jax.default_backend()
-        reps = jax.device_count(platform)
-        logging.debug("Running on %s with %d devices", platform, reps)
-        for batch in prefetch(data.batch(reps, drop_remainder=True)):
+        for batch in prefetch(data.batch(d_count, drop_remainder=True)):
             step_start_cb(self)
             r_state = replicate(self.state)
             r_state, metrics = step_fn(r_state, batch)
@@ -159,6 +156,10 @@ class BasicTrainer:
         else:
             logging.warning("Sanity check Failed: %s", input_errors)
 
+        platform = jax.default_backend()
+        d_count = jax.device_count(platform)
+        logging.debug("Running on %s with %d devices", platform, d_count)
+
         con = Console(color_system="windows", force_interactive=interactive, force_terminal=interactive)
         live = Live(self.train_window, console=con)
         live.start()
@@ -172,7 +173,7 @@ class BasicTrainer:
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
-            self._stateful_step_runner(data, self.train_step, self.train_hist["epochs"][-1]["train"],
+            self._stateful_step_runner(data, self.train_step,  d_count, self.train_hist["epochs"][-1]["train"],
                                        callbacks.on_train_start, callbacks.on_train_batch_start,
                                        callbacks.on_train_end, callbacks.on_train_batch_end)
 
@@ -184,7 +185,7 @@ class BasicTrainer:
             if val_data:
                 # Wrap test step in lambda, so it returns state and result to work with the stateful step pattern
                 state_test_step = lambda state, batch: (state, self.test_step(state, batch))
-                self._stateful_step_runner(data, state_test_step, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(data, state_test_step,  d_count, self.train_hist["epochs"][-1]["test"],
                                            callbacks.on_test_start, callbacks.on_test_batch_start,
                                            callbacks.on_test_end, callbacks.on_test_batch_end)
 
