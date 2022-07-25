@@ -6,6 +6,7 @@ from typing import Callable, Any, Tuple
 from functools import partial, reduce
 
 import numpy as np
+import jax.numpy as jnp
 from absl import logging
 import jax
 from flax.jax_utils import prefetch_to_device, replicate, unreplicate
@@ -132,8 +133,8 @@ class BasicTrainer:
         for batch in prefetch(data.batch(d_count, drop_remainder=True)):
             step_start_cb(self)
             r_state = replicate(self.state)
-            r_state, metrics = step_fn(r_state, batch)
-            self.state = unreplicate(r_state)
+            self.state, metrics = unreplicate(step_fn(r_state, batch))
+            # self.state = unreplicate(r_state)
             hist.append(metrics)
             step_end_cb(self)
         end_cb(self)
