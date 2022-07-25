@@ -142,15 +142,19 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
+        d_iter = data.as_numpy_iterator()
         # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
-        for batch in d_iter:
-            step_start_cb(self)
-            r_state, metrics = step_fn(r_state, batch)
-            hist.append(unreplicate(metrics))  # un-replicate metrics so we can log as we go
-            step_end_cb(self)
-        self.state = unreplicate(r_state)  # update and un-replicate, do this here to minimise reduce / broadcast calls
+        while True:
+            with jax.profiler.StepTraceAnnotation("train", step_num=self.state.step):
+                if not (batch := next(d_iter, None)):
+                    break
+                step_start_cb(self)
+                r_state, metrics = step_fn(r_state, batch)
+                self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
+                hist.append(metrics)
+                step_end_cb(self)
         end_cb(self)
 
     def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
@@ -174,7 +178,11 @@ class BasicTrainer:
 
         platform = jax.default_backend()
         d_count = jax.device_count(platform)
-        logging.debug("Running on %s with %d devices", platform, d_count)
+        logging.info("Running on %s with %d devices", platform, d_count)
+
+        logging.debug("Pref test: Updating data to have extra dim")
+        data = data.batch(d_count, drop_remainder=True).prefetch(2)
+        val_data = val_data if not val_data else val_data.batch(d_count, drop_remainder=True).prefetch(2)
 
         con = Console(color_system="windows", force_interactive=interactive, force_terminal=interactive)
         live = Live(self.train_window, console=con)
