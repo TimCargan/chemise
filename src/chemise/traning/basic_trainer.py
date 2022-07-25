@@ -143,7 +143,7 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
-        d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
         r_state = replicate(self.state)
         for batch in d_iter:
             step_start_cb(self)
