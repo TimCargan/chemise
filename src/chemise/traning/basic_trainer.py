@@ -130,7 +130,9 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        for batch in data.batch(d_count, drop_remainder=True).as_numpy_iterator():
+        d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
+        d_iter = prefetch_to_device(d_iter, 2)
+        for batch in d_iter:
             step_start_cb(self)
             r_state = replicate(self.state)
             self.state, metrics = unreplicate(step_fn(r_state, batch))
