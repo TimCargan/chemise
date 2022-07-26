@@ -143,7 +143,7 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        d_iter = prefetch_to_device(d_iter, self.pre_fetch)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         while True:
