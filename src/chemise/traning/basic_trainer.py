@@ -142,7 +142,7 @@ class BasicTrainer:
         :return:
         """
         start_cb(self)
-        d_iter = data.batch(d_count, drop_remainder=True).as_numpy_iterator()
+        d_iter = data.as_numpy_iterator()
         # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
@@ -178,7 +178,11 @@ class BasicTrainer:
 
         platform = jax.default_backend()
         d_count = jax.device_count(platform)
-        logging.debug("Running on %s with %d devices", platform, d_count)
+        logging.info("Running on %s with %d devices", platform, d_count)
+
+        logging.debug("Pref test: Updating data to have extra dim")
+        data = data.batch(d_count, drop_remainder=True).prefetch(2)
+        val_data = val_data if not val_data else val_data.batch(d_count, drop_remainder=True).prefetch(2)
 
         con = Console(color_system="windows", force_interactive=interactive, force_terminal=interactive)
         live = Live(self.train_window, console=con)
