@@ -55,18 +55,11 @@ def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
     return is_good, dict(**inputs, **labels)
 
 
-def prefetch(dataset, n_prefetch=1):
-    # Taken from: https://github.com/google-research/vision_transformer/blob/master/vit_jax/input_pipeline.py
-    ds_iter = iter(dataset)
-    ds_iter = map(lambda x: jax.tree_map(lambda t: np.asarray(memoryview(t)), x),
-                  ds_iter)
-    if n_prefetch:
-        ds_iter = prefetch_to_device(ds_iter, n_prefetch)
-    return ds_iter
-
-
 class Prefetcher(Thread):
-    def __init__(self, data:iter,  buffer_size: int = 3):
+    """
+    Wrap an iterator with a thead to load and prefetch onto the GPU in a no-blocking way
+    """
+    def __init__(self, data: iter,  buffer_size: int = 3):
         super(Prefetcher, self).__init__()
         self.data = data
         self.q = queue.Queue(buffer_size)
@@ -86,53 +79,9 @@ class Prefetcher(Thread):
         return self
 
     def __next__(self):
-        if n := self.q.get():
-            return n
+        if data := self.q.get():
+            return data
         raise StopIteration
-
-def prefetch_to_device_v2(iterator, size, devices=None):
-    """Shard and prefetch batches on device.
-
-    This utility takes an iterator and returns a new iterator which fills an on
-    device prefetch buffer. Eager prefetching can improve the performance of
-    training loops significantly by overlapping compute and data transfer.
-
-    This utility is mostly useful for GPUs, for TPUs and CPUs it should not be
-    necessary -- the TPU & CPU memory allocators (normally) don't pick a memory
-    location that isn't free yet so they don't block. Instead those allocators OOM.
-
-    Args:
-    iterator: an iterator that yields a pytree of ndarrays where the first
-      dimension is sharded across devices.
-
-    size: the size of the prefetch buffer.
-
-      If you're training on GPUs, 2 is generally the best choice because this
-      guarantees that you can overlap a training step on GPU with a data
-      prefetch step on CPU.
-
-    devices: the list of devices to which the arrays should be prefetched.
-
-      Defaults to the order of devices expected by `jax.pmap`.
-
-    Yields:
-    The original items from the iterator where each ndarray is now a sharded to
-    the specified devices.
-    """
-    queue = collections.deque()
-    devices = jax.local_devices()
-
-    def _prefetch(xs):
-        return jax.device_put_sharded(list(xs), devices)
-
-    def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
-        for data in itertools.islice(iterator, n):
-            queue.append(jax.tree_map(_prefetch, data))
-
-    enqueue(size)  # Fill up the buffer.
-    while queue:
-        yield queue.popleft()
-        enqueue(1)
 
 
 @jax.tree_util.Partial
@@ -218,11 +167,10 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        # d_iter = prefetch_to_device_v2(d_iter, self.pre_fetch)
-        d_iter = iter(Prefetcher(d_iter))
+        d_iter = iter(Prefetcher(d_iter, buffer_size=self.pre_fetch))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
-        step = int(self.state.step)  # Keep a local copy of step so we don't wait
+        step = int(self.state.step)
         while True:
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
@@ -231,11 +179,11 @@ class BasicTrainer:
                 r_state, metrics = step_fn(r_state, batch)
                 self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
                 hist.append(metrics)
-                step += 1
+                step += int(self.state.step)  # eval step keep in sync with GPU
                 step_end_cb(self)
         end_cb(self)
 
-    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
+    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1, interactive: bool = True):
         self.num_epochs = num_epochs
 
         train_cardinality = int(data.cardinality())
