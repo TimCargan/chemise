@@ -33,6 +33,10 @@ def make_progress() -> Progress:
 class ProgressBar(Callback):
     window_pane: str = "progbar"
 
+    # Performance
+    update_metric_freq: int = 1
+    _step_count: int = 0
+
     def on_fit_start(self, trainer):
         self.progress = make_progress()
         self.epoch_task = self.progress.add_task(f"Epochs", total=trainer.num_epochs, metrics="")
@@ -57,7 +61,11 @@ class ProgressBar(Callback):
 
     def on_train_batch_end(self, trainer):
         met = trainer.train_hist["epochs"][-1]["train"][-1]
-        self.progress.update(self.train_task, advance=1, metrics=make_metric_string(met))
+        updates = {}
+        if self._step_count % self.update_metric_freq == 0:
+            updates["metrics"] = make_metric_string(met)
+        self.progress.update(self.train_task, advance=1, **updates)
+        self._step_count += 1
 
     def on_test_batch_end(self, trainer):
         self.progress.update(self.val_prog, advance=1)
