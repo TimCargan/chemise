@@ -78,7 +78,7 @@ class Prefetcher(Thread):
             return jax.device_put_sharded(list(xs), devices)
 
         for data in self.data:
-            self.q.put(jax.tree_map(_prefetch, data))
+            self.q.put(jax.tree_util.tree_map(_prefetch, data))
         self.q.put(None)
 
     def __iter__(self):
@@ -222,14 +222,16 @@ class BasicTrainer:
         d_iter = iter(Prefetcher(d_iter))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
+        step = int(self.state.step)  # Keep a local copy of step so we don't wait
         while True:
-            with jax.profiler.StepTraceAnnotation("train", step_num=self.state.step):
+            with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
                 step_start_cb(self)
                 r_state, metrics = step_fn(r_state, batch)
                 self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
                 hist.append(metrics)
+                step += 1
                 step_end_cb(self)
         end_cb(self)
 
