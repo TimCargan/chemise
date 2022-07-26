@@ -1,7 +1,12 @@
 from __future__ import annotations
+
+import collections
+import itertools
 import operator
+import queue
 import time
 from dataclasses import dataclass, field
+from threading import Thread
 from typing import Callable, Any, Tuple
 from functools import partial, reduce
 from absl import logging
@@ -50,14 +55,33 @@ def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
     return is_good, dict(**inputs, **labels)
 
 
-def prefetch(dataset, n_prefetch=1):
-    # Taken from: https://github.com/google-research/vision_transformer/blob/master/vit_jax/input_pipeline.py
-    ds_iter = iter(dataset)
-    ds_iter = map(lambda x: jax.tree_map(lambda t: np.asarray(memoryview(t)), x),
-                  ds_iter)
-    if n_prefetch:
-        ds_iter = prefetch_to_device(ds_iter, n_prefetch)
-    return ds_iter
+class Prefetcher(Thread):
+    """
+    Wrap an iterator with a thead to load and prefetch onto the GPU in a no-blocking way
+    """
+    def __init__(self, data: iter,  buffer_size: int = 3):
+        super(Prefetcher, self).__init__()
+        self.data = data
+        self.q = queue.Queue(buffer_size)
+
+    def run(self):
+        devices = jax.local_devices()
+
+        def _prefetch(xs):
+            return jax.device_put_sharded(list(xs), devices)
+
+        for data in self.data:
+            self.q.put(jax.tree_util.tree_map(_prefetch, data))
+        self.q.put(None)
+
+    def __iter__(self):
+        self.start()
+        return self
+
+    def __next__(self):
+        if data := self.q.get():
+            return data
+        raise StopIteration
 
 
 @jax.tree_util.Partial
@@ -143,21 +167,23 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        # d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        d_iter = iter(Prefetcher(d_iter, buffer_size=self.pre_fetch))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
+        step = int(self.state.step)
         while True:
-            with jax.profiler.StepTraceAnnotation("train", step_num=self.state.step):
+            with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
                 step_start_cb(self)
                 r_state, metrics = step_fn(r_state, batch)
                 self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
                 hist.append(metrics)
+                step += int(self.state.step)  # eval step keep in sync with GPU
                 step_end_cb(self)
         end_cb(self)
 
-    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset=None, num_epochs:int=1, interactive:bool=True):
+    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1, interactive: bool = True):
         self.num_epochs = num_epochs
 
         train_cardinality = int(data.cardinality())
