@@ -3,8 +3,10 @@ from __future__ import annotations
 import collections
 import itertools
 import operator
+import queue
 import time
 from dataclasses import dataclass, field
+from threading import Thread
 from typing import Callable, Any, Tuple
 from functools import partial, reduce
 from absl import logging
@@ -63,6 +65,31 @@ def prefetch(dataset, n_prefetch=1):
     return ds_iter
 
 
+class Prefetcher(Thread):
+    def __init__(self, data:iter,  buffer_size: int = 3):
+        super(Prefetcher, self).__init__()
+        self.data = data
+        self.q = queue.Queue(buffer_size)
+
+    def run(self):
+        devices = jax.local_devices()
+
+        def _prefetch(xs):
+            return jax.device_put_sharded(list(xs), devices)
+
+        for data in self.data:
+            self.q.put(jax.tree_map(_prefetch, data))
+        self.q.put(None)
+
+    def __iter__(self):
+        self.start()
+        return self
+
+    def __next__(self):
+        if n := self.q.get():
+            return n
+        raise StopIteration
+
 def prefetch_to_device_v2(iterator, size, devices=None):
     """Shard and prefetch batches on device.
 
@@ -95,9 +122,12 @@ def prefetch_to_device_v2(iterator, size, devices=None):
     queue = collections.deque()
     devices = jax.local_devices()
 
+    def _prefetch(xs):
+        return jax.device_put_sharded(list(xs), devices)
+
     def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
         for data in itertools.islice(iterator, n):
-            queue.append(jax.device_put_sharded(data, devices))
+            queue.append(jax.tree_map(_prefetch, data))
 
     enqueue(size)  # Fill up the buffer.
     while queue:
@@ -188,7 +218,8 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = prefetch_to_device_v2(d_iter, self.pre_fetch)
+        # d_iter = prefetch_to_device_v2(d_iter, self.pre_fetch)
+        d_iter = iter(Prefetcher(d_iter))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         while True:
