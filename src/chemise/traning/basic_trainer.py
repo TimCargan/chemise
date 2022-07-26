@@ -1,4 +1,7 @@
 from __future__ import annotations
+
+import collections
+import itertools
 import operator
 import time
 from dataclasses import dataclass, field
@@ -58,6 +61,48 @@ def prefetch(dataset, n_prefetch=1):
     if n_prefetch:
         ds_iter = prefetch_to_device(ds_iter, n_prefetch)
     return ds_iter
+
+
+def prefetch_to_device_v2(iterator, size, devices=None):
+    """Shard and prefetch batches on device.
+
+    This utility takes an iterator and returns a new iterator which fills an on
+    device prefetch buffer. Eager prefetching can improve the performance of
+    training loops significantly by overlapping compute and data transfer.
+
+    This utility is mostly useful for GPUs, for TPUs and CPUs it should not be
+    necessary -- the TPU & CPU memory allocators (normally) don't pick a memory
+    location that isn't free yet so they don't block. Instead those allocators OOM.
+
+    Args:
+    iterator: an iterator that yields a pytree of ndarrays where the first
+      dimension is sharded across devices.
+
+    size: the size of the prefetch buffer.
+
+      If you're training on GPUs, 2 is generally the best choice because this
+      guarantees that you can overlap a training step on GPU with a data
+      prefetch step on CPU.
+
+    devices: the list of devices to which the arrays should be prefetched.
+
+      Defaults to the order of devices expected by `jax.pmap`.
+
+    Yields:
+    The original items from the iterator where each ndarray is now a sharded to
+    the specified devices.
+    """
+    queue = collections.deque()
+    devices = jax.local_devices()
+
+    def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
+        for data in itertools.islice(iterator, n):
+            queue.append(jax.device_put_sharded(data, devices))
+
+    enqueue(size)  # Fill up the buffer.
+    while queue:
+        yield queue.popleft()
+        enqueue(1)
 
 
 @jax.tree_util.Partial
@@ -143,7 +188,7 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = prefetch_to_device(d_iter, self.pre_fetch)
+        d_iter = prefetch_to_device_v2(d_iter, self.pre_fetch)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         while True:
