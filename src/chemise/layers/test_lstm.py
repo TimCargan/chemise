@@ -4,7 +4,7 @@ import jax
 import jax.test_util
 import numpy as np
 import flax.linen as nn
-import lstm
+import chemise.layers.lstm as lstm
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()
