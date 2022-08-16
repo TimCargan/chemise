@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import collections
-import itertools
 import operator
 import queue
 import time
@@ -13,11 +11,9 @@ from absl import logging
 
 
 import jax
-from jax import numpy as jnp
 import numpy as np
 from jaxtyping import n
-from jaxtyping.pytree_type import PyTree
-from flax.jax_utils import prefetch_to_device, replicate, unreplicate
+from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from tensorflow import data as tfd  # Only for typing
 from rich.console import Console
@@ -206,7 +202,7 @@ class BasicTrainer:
         d_count = jax.device_count(platform)
         logging.info("Running on %s with %d devices", platform, d_count)
 
-        logging.debug("Pref test: Updating data to have extra dim")
+        logging.debug("Adding device batch of size (%d) to datasets", d_count)
         data = data.batch(d_count, drop_remainder=True).prefetch(2)
         val_data = val_data if not val_data else val_data.batch(d_count, drop_remainder=True).prefetch(2)
 
