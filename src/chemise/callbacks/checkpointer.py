@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from flax.training import checkpoints as cp
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning import BasicTrainer
+from chemise.traning.basic_trainer import BasicTrainer
 
 
 @dataclass

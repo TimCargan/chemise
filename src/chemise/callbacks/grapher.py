@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass
 from math import floor
 
@@ -9,7 +10,7 @@ from rich.panel import Panel
 import plotext as plt
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning import BasicTrainer
+from chemise.traning.basic_trainer import BasicTrainer
 from chemise.utils import list_dict_to_dict_list
 
 decoder = AnsiDecoder()
