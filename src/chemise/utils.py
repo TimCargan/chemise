@@ -55,3 +55,17 @@ def list_dict_to_dict_list(dict_list):
     keys = dict_list[0].keys()
     res = {k: [x[k] for x in dict_list] for k in keys}
     return res
+
+def datasetspec_to_zero(ds):
+    """
+    Convert a dataset elementSpec to `np.zeros` with the same shape
+    :param ds:
+    :return:
+    """
+    if isinstance(ds, tuple):
+        return tuple(datasetspec_to_zero(el) for el in ds)
+
+    if isinstance(ds, dict):
+        return {k: datasetspec_to_zero(v) for k, v in ds.items()}
+
+    return np.zeros(shape=ds.shape, dtype=ds.dtype.as_numpy_dtype)
