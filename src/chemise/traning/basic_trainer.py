@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import operator
-import queue
 import time
 from dataclasses import dataclass, field
 from functools import partial, reduce
-from threading import Thread
 from typing import Callable, Any, Tuple, List
 
 import jax
 import numpy as np
-from absl import logging
+from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import n
@@ -20,14 +18,23 @@ from rich.layout import Layout
 from rich.live import Live
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, CallbackFn
+from chemise.traning.prefetch import Prefetch
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
+
+flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
+flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
+
+FLAGS = flags.FLAGS
+
+State_Result = Tuple[TrainState, dict]
+Batch = Tuple[dict, dict]
 
 
 def empty_train_hist():
     return {"epochs": [], "train": []}
 
 
-def make_default_layout():
+def make_default_layout() -> Layout:
     layout = Layout(name="root")
     layout.split(
         Layout(name="graph", ratio=1),
@@ -49,48 +56,15 @@ def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
     is_good = np.logical_not(np.logical_or(r_inputs, r_labels))
     return is_good, dict(**inputs, **labels)
 
-
-class Prefetcher(Thread):
-    """
-    Wrap an iterator with a thead to load and prefetch onto the GPU in a no-blocking way
-    """
-    def __init__(self, data: iter,  buffer_size: int = 3):
-        super(Prefetcher, self).__init__()
-        self.data = data
-        self.q = queue.Queue(buffer_size)
-
-    def run(self):
-        devices = jax.local_devices()
-
-        def _prefetch(xs):
-            return jax.device_put_sharded(list(xs), devices)
-
-        for data in self.data:
-            self.q.put(jax.tree_util.tree_map(_prefetch, data))
-        self.q.put(None)
-
-    def __iter__(self):
-        self.start()
-        return self
-
-    def __next__(self):
-        if data := self.q.get():
-            return data
-        raise StopIteration
-
-
 @jax.tree_util.Partial
 def no_metrics_fn(y, y_hat):
     return {}
-
-
-State_Result = Tuple[TrainState, dict]
-Batch = Tuple[dict, dict]
 
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
     """
     Implement boilerplate helper methods to fit basic models similar to what we get in keras
+    This class can manage all the state for the various jax / flax object needed to run basic NN training
     We want to have a few basic methods
      - Fit
      - Predict
@@ -98,12 +72,11 @@ class BasicTrainer:
     """
 
     state: TrainState = field(compare=False)
-    loss_fn: Callable[[Any, Any], dict]
-    metrics_fn: Callable[[Any, Any], dict] = no_metrics_fn
+    loss_fn: Callable[[n, n], dict]
+    metrics_fn: Callable[[n, n], dict] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
-
 
     rng_keys: List[str] = field(default_factory=list, compare=False)
     seed: int = 0
@@ -113,7 +86,6 @@ class BasicTrainer:
     pre_fetch: int = 2
 
     def __post_init__(self):
-        print("This does get called")
         self._next_prng = jax.random.PRNGKey(self.seed)
 
     def _next_rand(self) -> jax.random.PRNGKeyArray:
@@ -134,6 +106,18 @@ class BasicTrainer:
         rngl = jax.random.split(rng, num=len(self.rng_keys))
         rngs = {k: rngl[i] for i, k in enumerate(self.rng_keys)}
         return rngs
+
+    def _train_step(self, batch):
+        """
+        Run a single step
+        :param batch: Batch data
+        :return:
+        """
+        r_state = replicate(self.state)
+        rngs = replicate(self._make_rngs())
+        r_state, metrics = self.train_step(r_state, batch, rngs)
+        self.state, metrics = unreplicate((r_state, metrics))
+        return metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def train_step(self, state: TrainState, batch: Batch, rngs=None) -> State_Result:
@@ -190,7 +174,7 @@ class BasicTrainer:
         """
         start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetcher(d_iter, buffer_size=self.pre_fetch))
+        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         step = int(self.state.step)
@@ -207,7 +191,7 @@ class BasicTrainer:
                 step_end_cb(self)
         end_cb(self)
 
-    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1, interactive: bool = True):
+    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
         self.num_epochs = num_epochs
 
         train_cardinality = int(data.cardinality())
@@ -234,8 +218,8 @@ class BasicTrainer:
         data = data.batch(d_count, drop_remainder=True).prefetch(2)
         val_data = val_data if not val_data else val_data.batch(d_count, drop_remainder=True).prefetch(2)
 
-        con = Console(color_system="windows", force_interactive=interactive, force_terminal=interactive)
-        live = Live(self.train_window, console=con)
+        con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
+        live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
         live.start()
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
