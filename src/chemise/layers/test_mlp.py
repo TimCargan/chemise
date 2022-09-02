@@ -85,6 +85,21 @@ class MLCTest(parameterized.TestCase):
         output, _ = model.init_with_output(rng, inputs)
         self.assertEqual((batch_size, 16, 16, 16), output.shape)
 
+    def test_jit(self):
+        batch_size = 2
+        model = MLC(depth=3, features=16, kernel_size=(3, 3), pool_size=(2, 2), key="x")
+        rng = jax.random.PRNGKey(0)
+        inputs = {"x": jax.random.normal(rng, shape=[batch_size, 128, 128, 1])}
+        output, pram = model.init_with_output(rng, inputs)
+        @jax.jit
+        def run(pram, inputs):
+            return model.apply(pram, inputs)
+
+        res = run(pram, inputs)
+        self.assertEqual((batch_size, 16, 16, 16), output.shape)
+
+
+
 
 if __name__ == '__main__':
     absltest.main()
