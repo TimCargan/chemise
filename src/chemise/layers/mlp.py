@@ -43,7 +43,7 @@ class MLC(nn.Module):
         if self.key:
             x = x[self.key]
 
-        axes = np.arange(-1, len(self.kernel_size) * -1)
+        axes = np.arange(-2, len(self.kernel_size) * -1)
 
         for d in range(self.depth):
             x = nn.Conv(features=self.features, kernel_size=self.kernel_size, padding="SAME")(x)
