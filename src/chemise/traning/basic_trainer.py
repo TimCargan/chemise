@@ -12,10 +12,10 @@ from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import n
-# from tensorflow import data as tfd  # Only for typing
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, CallbackFn
 from chemise.traning.prefetch import Prefetch
@@ -124,9 +124,7 @@ class BasicTrainer:
         """
         Train for a single step.
         TODO:
-         - support arbitrary loss functions
          - support multiple output / multi loss via dicts akin to keras
-         -
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
@@ -153,9 +151,13 @@ class BasicTrainer:
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def test_step(self, state: TrainState, batch: Batch, rngs=None):
-        y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
+        x = batch[0]
+        y = batch[1]
+        y_pred = state.apply_fn({'params': state.params}, x, rngs=rngs)
         loss = self.loss_fn(batch[1], y_pred)
-        return {"loss": loss}
+        metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
+        metrics = jax.lax.pmean(metrics, axis_name='batch')
+        return state, metrics
 
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Batch, Any], State_Result], rng,
                               hist: list,
@@ -241,9 +243,7 @@ class BasicTrainer:
 
             # Test model - Only run if there is val_data
             if val_data:
-                # Wrap test step in lambda, so it returns state and result to work with the stateful step pattern
-                state_test_step = lambda state, batch, rngs: (state, self.test_step(state, batch, rngs))
-                self._stateful_step_runner(val_data, state_test_step, d_count, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(val_data, self.test_step, d_count, self.train_hist["epochs"][-1]["test"],
                                            callbacks.on_test_start, callbacks.on_test_batch_start,
                                            callbacks.on_test_end, callbacks.on_test_batch_end)
 
