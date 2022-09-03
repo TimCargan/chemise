@@ -47,7 +47,8 @@ class MLC(nn.Module):
 
         for d in range(self.depth):
             x = nn.Conv(features=self.features, kernel_size=self.kernel_size, padding="SAME")(x)
+            x = nn.LayerNorm(feature_axes=axes, reduction_axes=axes)(x)
             x = self.pool_fn(x, self.pool_size, strides=self.pool_size)
             x = self.activation_fn(x)
-            x = nn.LayerNorm(feature_axes=axes, reduction_axes=axes)(x)
+
         return x
