@@ -37,6 +37,7 @@ class MLC(nn.Module):
     pool_size: Sequence[int] = (2, 2)
     pool_fn: Callable[[n], n] = nn.max_pool
     activation_fn: Callable[[n], n] = nn.relu
+    # norm_fn: Callable[[n], n] = nn.LayerNorm()
     key: str = None
 
     @nn.compact
@@ -48,7 +49,8 @@ class MLC(nn.Module):
 
         for d in range(self.depth):
             x = nn.Conv(features=self.features, kernel_size=self.kernel_size, padding="SAME")(x)
-            x = nn.LayerNorm(feature_axes=axes, reduction_axes=axes)(x)
+            if d > 1:
+                x = nn.LayerNorm()(x)
             x = self.activation_fn(x)
             x = self.pool_fn(x, self.pool_size, strides=self.pool_size)
 
