@@ -45,12 +45,12 @@ class MLC(nn.Module):
         if self.key:
             x = x[self.key]
 
-        axes = np.arange(-1,)
+        axes = np.arange(1, len(self.kernel_size)+2) * -1
+        assert len(axes) > len(self.kernel_size)
 
         for d in range(self.depth):
             x = nn.Conv(features=self.features, kernel_size=self.kernel_size, padding="SAME")(x)
-            if d > 1:
-                x = nn.LayerNorm()(x)
+            x = nn.LayerNorm(reduction_axes=axes, feature_axes=axes)(x)
             x = self.activation_fn(x)
             x = self.pool_fn(x, self.pool_size, strides=self.pool_size)
 
