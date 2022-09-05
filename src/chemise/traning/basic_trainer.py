@@ -43,6 +43,14 @@ def make_default_layout() -> Layout:
     return layout
 
 
+def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
+    platform = jax.default_backend()
+    d_count = jax.device_count(platform)
+    logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
+    logging.debug("Adding device batch of size (%d) to dataset: %s", d_count, data.element_spec)
+    data = data.batch(d_count, drop_remainder=True).prefetch(2)
+    return data
+
 def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
     """
     Check to see if the input and label data looks correct, i.e not all the same value
@@ -72,7 +80,7 @@ class BasicTrainer:
     """
 
     state: TrainState = field(compare=False)
-    loss_fn: Callable[[n, n], dict]
+    loss_fn: Callable[[n, n], n]
     metrics_fn: Callable[[n, n], dict] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
@@ -131,35 +139,54 @@ class BasicTrainer:
         x = batch[0]
         y = batch[1]
 
+        GLOBAL_BATCH = np.product(y["pred"].shape[:2])
+
         @partial(jax.value_and_grad, has_aux=True)
         def step(params):
             y_pred = state.apply_fn({'params': params}, x, rngs=rngs)
-            loss = self.loss_fn(y, y_pred)
+            p_loss = self.loss_fn(y, y_pred)
+            loss = p_loss.sum() / GLOBAL_BATCH
             return loss, y_pred
 
         (loss, y_pred), grads = step(state.params)
-        grads = jax.lax.pmean(grads, axis_name="batch")
+        grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def pred_step(self, state: TrainState, batch):
-        y_pred = state.apply_fn({'params': state.params}, batch[0])
-        return y_pred
+    def pred_step(self, state: TrainState, batch:Batch, rngs=None):
+        y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
+        return (*batch, y_pred)
+    
+    def map_model(self, data: tfd.Dataset):
+        """
+        Transform a dataset to
+        :param data:
+        :return:
+        """
+        data = add_device_batch(data)
+        d_iter = data.as_numpy_iterator()
+        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        state = replicate(self.state)
+        while True:
+            if not (batch := next(d_iter, None)):
+                break
+            rngs = replicate(self._make_rngs())
+            yield self.pred_step(state, batch, rngs)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def test_step(self, state: TrainState, batch: Batch, rngs=None):
+    def test_step(self, state: TrainState, batch: Batch, rngs=None) -> State_Result:
         x = batch[0]
         y = batch[1]
         y_pred = state.apply_fn({'params': state.params}, x, rngs=rngs)
-        loss = self.loss_fn(batch[1], y_pred)
+        loss = self.loss_fn(batch[1], y_pred).mean()
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Batch, Any], State_Result], rng,
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Batch, Any], State_Result],
                               hist: list,
                               start_cb: CallbackFn, step_start_cb: CallbackFn,
                               end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
@@ -193,10 +220,10 @@ class BasicTrainer:
                 step_end_cb(self)
         end_cb(self)
 
-    def fit(self, data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
+    def fit(self, train_data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
         self.num_epochs = num_epochs
 
-        train_cardinality = int(data.cardinality())
+        train_cardinality = int(train_data.cardinality())
         self.train_steps = train_cardinality if train_cardinality > 0 else None
 
         self.eval_steps = None
@@ -205,20 +232,15 @@ class BasicTrainer:
             self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
-        first = data.as_numpy_iterator().next()
+        first = train_data.as_numpy_iterator().next()
         pass_sanity, input_errors = sanity_check(first)
         if pass_sanity:
             logging.info("Sanity check passed: %s", input_errors)
         else:
             logging.warning("Sanity check Failed: %s", input_errors)
 
-        platform = jax.default_backend()
-        d_count = jax.device_count(platform)
-        logging.info("Running on %s with %d devices", platform, d_count)
-
-        logging.debug("Adding device batch of size (%d) to datasets", d_count)
-        data = data.batch(d_count, drop_remainder=True).prefetch(2)
-        val_data = val_data if not val_data else val_data.batch(d_count, drop_remainder=True).prefetch(2)
+        train_data = add_device_batch(train_data)
+        val_data = val_data if not val_data else add_device_batch(val_data)
 
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
@@ -233,7 +255,7 @@ class BasicTrainer:
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
-            self._stateful_step_runner(data, self.train_step, d_count, self.train_hist["epochs"][-1]["train"],
+            self._stateful_step_runner(train_data, self.train_step,  self.train_hist["epochs"][-1]["train"],
                                        callbacks.on_train_start, callbacks.on_train_batch_start,
                                        callbacks.on_train_end, callbacks.on_train_batch_end)
 
@@ -243,7 +265,7 @@ class BasicTrainer:
 
             # Test model - Only run if there is val_data
             if val_data:
-                self._stateful_step_runner(val_data, self.test_step, d_count, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(val_data, self.test_step, self.train_hist["epochs"][-1]["test"],
                                            callbacks.on_test_start, callbacks.on_test_batch_start,
                                            callbacks.on_test_end, callbacks.on_test_batch_end)
 
@@ -262,7 +284,7 @@ class BasicTrainer:
             met = make_metric_string(mets)
             duration = time.monotonic() - epoch_start_time
             duration = seconds_pretty(duration)
-            logging.info(f"Epoch:{e} - {duration}  {met}")
+            logging.info(f"Epoch: {e} - {duration}  {met}")
 
             # End of epoch callbacks
             callbacks.on_epoch_end(self)
