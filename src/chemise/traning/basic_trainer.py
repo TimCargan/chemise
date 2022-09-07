@@ -11,7 +11,7 @@ import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
-from jaxtyping import n
+from jaxtyping import Num, Array
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -27,7 +27,7 @@ flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to r
 FLAGS = flags.FLAGS
 
 State_Result = Tuple[TrainState, dict]
-Batch = Tuple[dict, dict]
+Batch = Tuple[dict[str, Num[Array, "..."]], dict[str, Num[Array, "..."]]]
 
 
 def empty_train_hist():
@@ -51,7 +51,7 @@ def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
     data = data.batch(d_count, drop_remainder=True).prefetch(2)
     return data
 
-def sanity_check(data: tuple[dict[str, n], dict[str, n]]):
+def sanity_check(data: tuple[dict[str, Num[Array, "..."]], dict[str, Num[Array, "..."]]]):
     """
     Check to see if the input and label data looks correct, i.e not all the same value
     :param data:
@@ -80,8 +80,8 @@ class BasicTrainer:
     """
 
     state: TrainState = field(compare=False)
-    loss_fn: Callable[[n, n], n]
-    metrics_fn: Callable[[n, n], dict] = no_metrics_fn
+    loss_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Num[Array, "..."]]
+    metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], dict] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
@@ -139,7 +139,7 @@ class BasicTrainer:
         x = batch[0]
         y = batch[1]
 
-        GLOBAL_BATCH = np.product(y["pred"].shape[:2])
+        GLOBAL_BATCH = np.product(list(y.values())[0].shape[:2])
 
         @partial(jax.value_and_grad, has_aux=True)
         def step(params):
