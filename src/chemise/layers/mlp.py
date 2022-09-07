@@ -2,7 +2,7 @@ from typing import Callable, Sequence
 
 import flax.linen as nn
 import numpy as np
-from jaxtyping import n
+from jaxtyping import Num, Array
 
 
 class MLP(nn.Module):
@@ -11,11 +11,11 @@ class MLP(nn.Module):
     """
     depth: int
     width: int
-    activation: Callable[[n], n] = nn.relu
+    activation: Callable[[Num[Array, "..."]], Num[Array, "..."]] = nn.relu
     key: str = None
 
     @nn.compact
-    def __call__(self, x: n):
+    def __call__(self, x: Num[Array, "..."]) -> Num[Array, "..."]:
         if self.key:
             x = x[self.key]
 
@@ -35,18 +35,18 @@ class MLC(nn.Module):
     features: int
     kernel_size: Sequence[int] = (3, 3)
     pool_size: Sequence[int] = (2, 2)
-    pool_fn: Callable[[n], n] = nn.max_pool
-    activation_fn: Callable[[n], n] = nn.relu
+    pool_fn: Callable[[Num[Array, "..."]], Num[Array, "..."]] = nn.max_pool
+    activation_fn: Callable[[Num[Array, "..."]], Num[Array, "..."]] = nn.relu
     # norm_fn: Callable[[n], n] = nn.LayerNorm()
     padding: str = "SAME"
     key: str = None
 
     @nn.compact
-    def __call__(self, x: n["... H W C"]) -> n:
+    def __call__(self, x: Num[Array, "... H W C"]) -> Num[Array, "... nH nW nC"]:
         if self.key:
             x = x[self.key]
 
-        axes = np.arange(1, len(self.kernel_size)+2) * -1
+        axes = -np.arange(0, len(self.kernel_size)+1) - 1
         assert len(axes) > len(self.kernel_size)
 
         for d in range(self.depth):
