@@ -37,6 +37,7 @@ class MLPTest(chex.TestCase):
 
         res = run(pram, inputs)
         self.assertEqual((batch_size, *extra_dim, exp_width), res.shape)
+        self.assertFalse(np.all(res == res[0], axis=None)) # Quick sanity check that they aren't all the same
 
     def test_with_key_input(self):
         batch_size = 2
@@ -69,6 +70,7 @@ class MLCTest(chex.TestCase):
 
         res = run(pram, inputs)
         self.assertEqual((batch_size, *[exp_width]*dims, 16), res.shape)
+        self.assertFalse(np.all(res == res[0], axis=None)) # Quick sanity check that they aren't all the same
 
     def test_with_key_input(self):
         batch_size = 2
