@@ -82,6 +82,19 @@ class Callback(ABC):
         pass
 
 
+class StepCallback:
+    def start_cb(self, trainer):
+        pass
+
+    def step_start_cb(self, trainer):
+        pass
+
+    def step_end_cb(self, trainer):
+        pass
+
+    def end_cb(self, trainer):
+        pass
+
 @dataclass
 class CallbackRunner:
     callbacks: list[Callback]
@@ -133,3 +146,27 @@ class CallbackRunner:
     def on_test_batch_end(self, trainer):
         for cb in self.callbacks:
             cb.on_test_batch_end(trainer)
+
+    def train_step_callbacks(self) -> StepCallback:
+        """
+        Util functions to package all the train_step callbacks into one object
+        :return:
+        """
+        cbs = StepCallback()
+        cbs.start_cb = self.on_train_start
+        cbs.end_cb = self.on_train_end
+        cbs.step_start_cb = self.on_train_batch_start
+        cbs.step_end_cb = self.on_train_batch_end
+        return cbs
+
+    def test_step_callbacks(self) -> StepCallback:
+        """
+        Util functions to package all the test_step callbacks into one object
+        :return:
+        """
+        cbs = StepCallback()
+        cbs.start_cb = self.on_test_start
+        cbs.end_cb = self.on_test_end
+        cbs.step_start_cb = self.on_test_batch_start
+        cbs.step_end_cb = self.on_test_batch_end
+        return cbs

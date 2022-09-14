@@ -17,7 +17,7 @@ from rich.layout import Layout
 from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
-from chemise.callbacks.abc_callback import Callback, CallbackRunner, CallbackFn
+from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
 from chemise.traning.prefetch import Prefetch
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
@@ -27,7 +27,8 @@ flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to r
 FLAGS = flags.FLAGS
 
 State_Result = Tuple[TrainState, dict]
-Batch = Tuple[dict[str, Num[Array, "..."]], dict[str, Num[Array, "..."]]]
+Features = dict[str, Num[Array, "..."]]
+Batch = Tuple[Features, Features]
 
 
 def empty_train_hist():
@@ -51,22 +52,37 @@ def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
     data = data.batch(d_count, drop_remainder=True).prefetch(2)
     return data
 
-def sanity_check(data: tuple[dict[str, Num[Array, "..."]], dict[str, Num[Array, "..."]]]):
+
+def _sanity_error(data: Features) -> (bool, dict):
+    """
+    Determine if all values for each key in a dict of Num's are the same
+    Note: This has the opposite result to `sanity_check` which returns True if the data is different
+    :param data:
+    :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
+    """
+    feats = {f"{k}": np.all(v == v[0], axis=None) for k, v in data.items()}
+    is_good = reduce(operator.or_, feats.values(), False)
+    return is_good, feats
+
+
+def sanity_check(data: Batch):
     """
     Check to see if the input and label data looks correct, i.e not all the same value
     :param data:
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
-    inputs = {f"I_{k}": np.all(v == v[0], axis=None) for k, v in data[0].items()}
-    r_inputs = reduce(operator.or_, inputs.values(), False)
-    labels = {f"O_{k}": np.all(v == v[0], axis=None) for k, v in data[1].items()}
-    r_labels = reduce(operator.or_, labels.values(), False)
+    r_inputs, inputs = _sanity_error(data[0])
+    inputs = {f"I_{k}": np.reshape(data[0][k], (-1,))[...,0] for k, v in inputs.items() if v}
+    r_labels, labels = _sanity_error(data[1])
+    labels = {f"O_{k}": np.reshape(data[1][k], (-1,))[..., 0] for k, v in labels.items() if v}
     is_good = np.logical_not(np.logical_or(r_inputs, r_labels))
     return is_good, dict(**inputs, **labels)
+
 
 @jax.tree_util.Partial
 def no_metrics_fn(y, y_hat):
     return {}
+
 
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
@@ -108,6 +124,7 @@ class BasicTrainer:
     def _make_rngs(self) -> dict[str, jax.random.PRNGKeyArray]:
         """
         Make a dict of rngs to be passed to apply calls
+        TODO: Look into using mixin
         :return:
         """
         rng = self._next_rand()
@@ -143,6 +160,11 @@ class BasicTrainer:
 
         @partial(jax.value_and_grad, has_aux=True)
         def step(params):
+            """
+            Run a single step with grads calculated for backprop
+            :param params: params of model
+            :return: [Loss, predictions]
+            """
             y_pred = state.apply_fn({'params': params}, x, rngs=rngs)
             p_loss = self.loss_fn(y, y_pred)
             loss = p_loss.sum() / GLOBAL_BATCH
@@ -156,15 +178,23 @@ class BasicTrainer:
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def pred_step(self, state: TrainState, batch:Batch, rngs=None):
+    def pred_step(self, state: TrainState, batch: Batch, rngs=None):
+        """
+        Apply model to a batch of data returning
+        :param state: model state object
+        :param batch: Batch tuple to predict with
+        :param rngs: dict of rngs for use in the model
+        :return: tuple of [X, Y, Y_hat]
+        """
         y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
         return (*batch, y_pred)
-    
+
     def map_model(self, data: tfd.Dataset):
         """
-        Transform a dataset to
-        :param data:
-        :return:
+        Map the model over the dataset
+        Transforming it to include predictions
+        :param data: dataset to map over
+        :return: an iterator that yields [X, Y, Y_hat]
         """
         data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
@@ -178,6 +208,13 @@ class BasicTrainer:
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def test_step(self, state: TrainState, batch: Batch, rngs=None) -> State_Result:
+        """
+        Perform a prediction step and calculate metrics for a given batch
+        :param state: model state object
+        :param batch: Batch tuple to predict with
+        :param rngs: dict of rngs for use in the model
+        :return: [State, dict metrics]
+        """
         x = batch[0]
         y = batch[1]
         y_pred = state.apply_fn({'params': state.params}, x, rngs=rngs)
@@ -187,21 +224,16 @@ class BasicTrainer:
         return state, metrics
 
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Batch, Any], State_Result],
-                              hist: list,
-                              start_cb: CallbackFn, step_start_cb: CallbackFn,
-                              end_cb: CallbackFn, step_end_cb: CallbackFn) -> None:
+                              hist: list, callback: StepCallback) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
         :param data: data to iterate over
         :param step_fn: the step function to call, must be
         :param hist:
-        :param start_cb:
-        :param step_start_cb:
-        :param end_cb:
-        :param step_end_cb:
+        :param callback: StepCallback object
         :return:
         """
-        start_cb(self)
+        callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
         d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
@@ -211,16 +243,23 @@ class BasicTrainer:
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
-                step_start_cb(self)
+                callback.step_start_cb(self)
                 rngs = replicate(self._make_rngs())
                 r_state, metrics = step_fn(r_state, batch, rngs)
-                self.state, metrics = unreplicate((r_state, metrics))   # un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
                 step += int(self.state.step)  # eval step keep in sync with GPU
-                step_end_cb(self)
-        end_cb(self)
+                callback.step_end_cb(self)
+        callback.end_cb(self)
 
     def fit(self, train_data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
+        """
+        Fit model to a given dataset
+        :param train_data: data to fit the model to
+        :param val_data: validation data to
+        :param num_epochs: number of epochs to appy the data
+        :return:
+        """
         self.num_epochs = num_epochs
 
         train_cardinality = int(train_data.cardinality())
@@ -237,7 +276,7 @@ class BasicTrainer:
         if pass_sanity:
             logging.info("Sanity check passed: %s", input_errors)
         else:
-            logging.warning("Sanity check Failed: %s", input_errors)
+            logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
 
         train_data = add_device_batch(train_data)
         val_data = val_data if not val_data else add_device_batch(val_data)
@@ -255,9 +294,8 @@ class BasicTrainer:
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
-            self._stateful_step_runner(train_data, self.train_step,  self.train_hist["epochs"][-1]["train"],
-                                       callbacks.on_train_start, callbacks.on_train_batch_start,
-                                       callbacks.on_train_end, callbacks.on_train_batch_end)
+            self._stateful_step_runner(train_data, self.train_step, self.train_hist["epochs"][-1]["train"],
+                                       callbacks.train_step_callbacks())
 
             # Update after first epoch sine they should all be the same size
             if self.train_steps is None:
@@ -266,8 +304,7 @@ class BasicTrainer:
             # Test model - Only run if there is val_data
             if val_data:
                 self._stateful_step_runner(val_data, self.test_step, self.train_hist["epochs"][-1]["test"],
-                                           callbacks.on_test_start, callbacks.on_test_batch_start,
-                                           callbacks.on_test_end, callbacks.on_test_batch_end)
+                                           callbacks.test_step_callbacks())
 
                 # Update after first epoch sine they should be the same size
                 if self.eval_steps is None:
