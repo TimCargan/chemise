@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 import jax
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning import BasicTrainer
+
+if TYPE_CHECKING:
+    from chemise.traning import BasicTrainer
 
 @dataclass
 class Profile(Callback):

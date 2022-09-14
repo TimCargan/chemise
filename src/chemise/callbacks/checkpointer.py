@@ -1,9 +1,14 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 from flax.training import checkpoints as cp
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning.basic_trainer import BasicTrainer
+
+if TYPE_CHECKING:
+    from chemise.traning.basic_trainer import BasicTrainer
 
 
 @dataclass

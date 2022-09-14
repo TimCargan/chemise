@@ -92,7 +92,7 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
         ds = (self.zero_in, self.zero_l)
         good, in_dict = basic_trainer.sanity_check(ds)
         self.assertFalse(good)
-        expect = {"I_a": True, "I_b": True, "I_c": True, "O_l": True}
+        expect = {"I_a": np.array(0), "I_b": np.array(0), "I_c": np.array(0), "O_l": np.array(0)}
         self.assertDictEqual(expect, in_dict)
 
     def test_all_good(self):
@@ -100,7 +100,7 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
         ds = (self.rnd_in, self.rnd_l)
         good, in_dict = basic_trainer.sanity_check(ds)
         self.assertTrue(good)
-        expect = {"I_a": False, "I_b": False, "I_c": False, "O_l": False}
+        expect = {}
         self.assertDictEqual(expect, in_dict)
 
     def test_input_good_label_bad(self):
@@ -108,7 +108,7 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
         ds = (self.rnd_in, self.zero_l)
         good, in_dict = basic_trainer.sanity_check(ds)
         self.assertFalse(good)
-        expect = {"I_a": False, "I_b": False, "I_c": False, "O_l": True}
+        expect = {"O_l": np.array(0)}
         self.assertDictEqual(expect, in_dict)
 
     def test_one_bad(self):
@@ -117,7 +117,7 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
         ds = (self.rnd_in, self.rnd_l)
         good, in_dict = basic_trainer.sanity_check(ds)
         self.assertFalse(good)
-        expect = {"I_a": True, "I_b": False, "I_c": False, "O_l": False}
+        expect = {"I_a": np.array(0)}
         self.assertDictEqual(expect, in_dict)
 
 

@@ -1,17 +1,22 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from math import floor
+from typing import TYPE_CHECKING
 
 import numpy as np
+import plotext as plt
 from rich.ansi import AnsiDecoder
 from rich.console import Group
 from rich.jupyter import JupyterMixin
 from rich.panel import Panel
-import plotext as plt
 
 from chemise.callbacks.abc_callback import Callback
-from chemise.traning.basic_trainer import BasicTrainer
 from chemise.utils import list_dict_to_dict_list
+
+if TYPE_CHECKING:
+    from chemise.traning.basic_trainer import BasicTrainer
+
 
 decoder = AnsiDecoder()
 
