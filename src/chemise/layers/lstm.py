@@ -1,5 +1,5 @@
 import functools
-import jax
+
 import jax.numpy as jnp
 from flax import linen as nn
 
@@ -43,3 +43,19 @@ class AutoregLSTM(nn.Module):
         carry, y = self.cell(carry, in_x)
         y = self.output_layer(y)
         return (carry, y), y
+
+
+class FullAutoLSTM(nn.Module):
+    output_layer: nn.Dense = None
+    cell: nn.OptimizedLSTMCell = None
+
+    @nn.compact
+    def __call__(self, initial_state, warmup_input, auto_input):
+        carry, warm_lstm = SimpleLSTM(cell=self.cell)(initial_state, warmup_input)
+        output_warm = self.output_layer(warm_lstm)
+
+        autoreg = AutoregLSTM(output_layer=self.output_layer, cell=self.cell)
+        _, rest_output = autoreg((carry, output_warm[:, -1]), auto_input)
+
+        pred = jnp.concatenate([output_warm, rest_output], axis=-2)
+        return pred
