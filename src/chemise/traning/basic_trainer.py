@@ -132,6 +132,19 @@ class BasicTrainer:
         rngs = {k: rngl[i] for i, k in enumerate(self.rng_keys)}
         return rngs
 
+    def step(self, batch: Batch):
+        """
+        Run a single step without any jax transformations, helpful for debugging
+        :param batch:
+        :return: [predictions, loss, metrics]
+        """
+        x, y = batch
+        rngs = self._make_rngs()
+        y_pred = self.state.apply_fn({'params': self.state.params}, batch[0], rngs=rngs)
+        p_loss = self.loss_fn(y, y_pred)
+        met = self.metrics_fn(y, y_pred)
+        return (y_pred, p_loss, met)
+
     def _train_step(self, batch):
         """
         Run a single step
