@@ -219,7 +219,7 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        # d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         step = int(self.state.step)
         raw_rngs = self._make_rngs()
@@ -296,6 +296,9 @@ class BasicTrainer:
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
         live.start()
 
+        train_data = add_device_batch(train_data)
+        val_data = add_device_batch(val_data) if val_data else val_data
+
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)
 
@@ -348,8 +351,9 @@ class BasicTrainer:
         :param data: dataset to map over
         :return: an iterator that yields [X, Y, Y_hat]
         """
+        data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        # d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         state = self.state
         while True:
             if not (batch := next(d_iter, None)):
