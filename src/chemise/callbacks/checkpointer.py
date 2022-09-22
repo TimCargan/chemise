@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from flax.training import checkpoints as cp
@@ -28,3 +29,8 @@ class Checkpointer(Callback):
         cp.save_checkpoint(target=trainer.state, step=trainer.state.step,
                            ckpt_dir=self.ckpt_dir, overwrite=self.overwrite,
                            keep=self.keep, keep_every_n_steps=self.keep_every_n_steps)
+
+    @staticmethod
+    def restore(trainer: BasicTrainer, ckpt_dir: Path | str):
+        trainer.state = cp.restore_checkpoint(ckpt_dir=ckpt_dir, target=trainer.state)
+        return trainer
