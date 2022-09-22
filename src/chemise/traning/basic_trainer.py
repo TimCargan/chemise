@@ -4,12 +4,11 @@ import operator
 import time
 from dataclasses import dataclass, field
 from functools import partial, reduce
-from typing import Callable, Any, Tuple, List, Iterator, Dict
+from typing import Callable, Any, Tuple, List, Iterator
 
 import jax
 import numpy as np
 from absl import logging, flags
-from flax.core.scope import LazyRng
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import Num, Array
@@ -19,11 +18,12 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import Prefetch
+from chemise.traning.prefetch import Prefetch, get_batch_size, Prefetch_dev
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
+flags.DEFINE_integer("prefetch_buffer", default=3, help="Number of batches to prefetch to the GPU")
 
 FLAGS = flags.FLAGS
 
@@ -71,7 +71,7 @@ def _sanity_error(data: Features) -> (bool, dict):
 
 def sanity_check(data: Batch):
     """
-    Check to see if the input and label data looks correct, i.e not all the same value
+    Check to see if the input and label data looks correct, i.e. not all the same value
     :param data:
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
@@ -109,9 +109,6 @@ class BasicTrainer:
     rng_keys: List[str] = field(default_factory=list, compare=False)
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
-
-    # Train Config Settings
-    pre_fetch: int = 2
 
     def __post_init__(self):
         self._next_prng = jax.random.PRNGKey(self.seed)
@@ -221,22 +218,29 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
+        rngs = replicate(self._make_rngs())
+        dev_batch_size = get_batch_size(r_state)
+
         step = int(self.state.step)
-        raw_rngs = self._make_rngs()
-        rngs = replicate(raw_rngs)
         while True:
+            callback.step_start_cb(self)
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
-                callback.step_start_cb(self)
+
+                if (s := get_batch_size(batch)) < dev_batch_size:
+                    r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
+                    rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+
                 r_state, metrics = step_fn(r_state, batch, rngs)
                 self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
-                step = int(self.state.step)  # eval step keep in sync with GPU
+                step += 1
                 callback.step_end_cb(self)
+
         callback.end_cb(self)
 
     """ 
@@ -295,12 +299,12 @@ class BasicTrainer:
         else:
             logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
 
-        train_data = add_device_batch(train_data)
-        val_data = val_data if not val_data else add_device_batch(val_data)
-
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
         live.start()
+
+        # train_data = add_device_batch(train_data)
+        # val_data = add_device_batch(val_data) if val_data else val_data
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)
@@ -356,7 +360,7 @@ class BasicTrainer:
         """
         data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         state = replicate(self.state)
         while True:
             if not (batch := next(d_iter, None)):
