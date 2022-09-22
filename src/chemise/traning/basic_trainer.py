@@ -145,7 +145,7 @@ class BasicTrainer:
         # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, None, 0, None), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Train for a single step.
@@ -179,7 +179,7 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, None, 0, None), axis_name="batch")
     def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
@@ -191,7 +191,7 @@ class BasicTrainer:
         y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
         return (*batch, y_pred)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, None, 0, None), axis_name="batch")
     def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
@@ -221,16 +221,15 @@ class BasicTrainer:
         d_iter = data.as_numpy_iterator()
         d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
-        r_state = replicate(self.state)
         step = int(self.state.step)
         raw_rngs = self._make_rngs()
-        rngs = replicate(raw_rngs)
+        rngs = raw_rngs
         while True:
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
                 callback.step_start_cb(self)
-                r_state, metrics = step_fn(r_state, batch, rngs)
+                r_state, metrics = step_fn(self.state, batch, rngs)
                 self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
                 step = int(self.state.step)  # eval step keep in sync with GPU
@@ -351,9 +350,9 @@ class BasicTrainer:
         """
         d_iter = data.as_numpy_iterator()
         d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
-        state = replicate(self.state)
+        state = self.state
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = replicate(self._make_rngs())
+            rngs = self._make_rngs()
             yield self.p_apply_step(state, batch, rngs)
