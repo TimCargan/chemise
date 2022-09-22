@@ -4,11 +4,12 @@ import operator
 import time
 from dataclasses import dataclass, field
 from functools import partial, reduce
-from typing import Callable, Any, Tuple, List
+from typing import Callable, Any, Tuple, List, Iterator, Dict
 
 import jax
 import numpy as np
 from absl import logging, flags
+from flax.core.scope import LazyRng
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import Num, Array
@@ -26,9 +27,12 @@ flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to r
 
 FLAGS = flags.FLAGS
 
-State_Result = Tuple[TrainState, dict]
+Result = dict[str, Num[Array, ""]]
+State_Result = Tuple[TrainState, Result]
 Features = dict[str, Num[Array, "..."]]
 Batch = Tuple[Features, Features]
+Rand_Dict = dict[str, jax.random.PRNGKeyArray]
+P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
 
 def empty_train_hist():
@@ -72,7 +76,7 @@ def sanity_check(data: Batch):
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
     r_inputs, inputs = _sanity_error(data[0])
-    inputs = {f"I_{k}": np.reshape(data[0][k], (-1,))[...,0] for k, v in inputs.items() if v}
+    inputs = {f"I_{k}": np.reshape(data[0][k], (-1,))[..., 0] for k, v in inputs.items() if v}
     r_labels, labels = _sanity_error(data[1])
     labels = {f"O_{k}": np.reshape(data[1][k], (-1,))[..., 0] for k, v in labels.items() if v}
     is_good = np.logical_not(np.logical_or(r_inputs, r_labels))
@@ -97,7 +101,7 @@ class BasicTrainer:
 
     state: TrainState = field(compare=False)
     loss_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Num[Array, "..."]]
-    metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], dict] = no_metrics_fn
+    metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], Result] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
@@ -132,33 +136,19 @@ class BasicTrainer:
         rngs = {k: rngl[i] for i, k in enumerate(self.rng_keys)}
         return rngs
 
-    def step(self, batch: Batch):
+    @partial(jax.jit, static_argnums=(0,))
+    def _rngs(self, key_dict: Rand_Dict, mixin: int) -> Rand_Dict:
         """
-        Run a single step without any jax transformations, helpful for debugging
-        :param batch:
-        :return: [predictions, loss, metrics]
-        """
-        x, y = batch
-        rngs = self._make_rngs()
-        y_pred = self.state.apply_fn({'params': self.state.params}, batch[0], rngs=rngs)
-        p_loss = self.loss_fn(y, y_pred)
-        met = self.metrics_fn(y, y_pred)
-        return (y_pred, p_loss, met)
-
-    def _train_step(self, batch):
-        """
-        Run a single step
-        :param batch: Batch data
+        Faster way to get new rands that can be JIT'ed. Use flax mixin methods wrappers
+        :param key_dict: dict of rands to update
+        :param mixin: data to mixin
         :return:
         """
-        r_state = replicate(self.state)
-        rngs = replicate(self._make_rngs())
-        r_state, metrics = self.train_step(r_state, batch, rngs)
-        self.state, metrics = unreplicate((r_state, metrics))
-        return metrics
+        # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
+        return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def train_step(self, state: TrainState, batch: Batch, rngs=None) -> State_Result:
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -191,7 +181,7 @@ class BasicTrainer:
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def pred_step(self, state: TrainState, batch: Batch, rngs=None):
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -202,25 +192,8 @@ class BasicTrainer:
         y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
         return (*batch, y_pred)
 
-    def map_model(self, data: tfd.Dataset):
-        """
-        Map the model over the dataset
-        Transforming it to include predictions
-        :param data: dataset to map over
-        :return: an iterator that yields [X, Y, Y_hat]
-        """
-        data = add_device_batch(data)
-        d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
-        state = replicate(self.state)
-        while True:
-            if not (batch := next(d_iter, None)):
-                break
-            rngs = replicate(self._make_rngs())
-            yield self.pred_step(state, batch, rngs)
-
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def test_step(self, state: TrainState, batch: Batch, rngs=None) -> State_Result:
+    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
         :param state: model state object
@@ -236,8 +209,7 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: Callable[[TrainState, Batch, Any], State_Result],
-                              hist: list, callback: StepCallback) -> None:
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
         :param data: data to iterate over
@@ -252,18 +224,50 @@ class BasicTrainer:
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         step = int(self.state.step)
+        raw_rngs = self._make_rngs()
+        rngs = replicate(raw_rngs)
         while True:
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
                 callback.step_start_cb(self)
-                rngs = replicate(self._make_rngs())
+                rngs = self._rngs(rngs, step)
                 r_state, metrics = step_fn(r_state, batch, rngs)
                 self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
-                step += int(self.state.step)  # eval step keep in sync with GPU
+                step = int(self.state.step)  # eval step keep in sync with GPU
                 callback.step_end_cb(self)
         callback.end_cb(self)
+
+    """ 
+    Standard Public interfaces, here is where the code that a standard user of the API
+    They take standard arguments and abstract away all the JAX JIT / PMAP / Replication
+    """
+
+    def step(self, batch: Batch) -> Tuple[Features, Num[Array, ""], Result]:
+        """
+        Run a single step without any jax transformations, helpful for debugging
+        :param batch:
+        :return: [predictions, loss, metrics]
+        """
+        x, y = batch
+        rngs = self._make_rngs()
+        y_pred = self.state.apply_fn({'params': self.state.params}, batch[0], rngs=rngs)
+        p_loss = self.loss_fn(y, y_pred)
+        met = self.metrics_fn(y, y_pred)
+        return (y_pred, p_loss, met)
+
+    def train_step(self, batch: Batch) -> Result:
+        """
+        Run a single step
+        :param batch: Batch data
+        :return:
+        """
+        r_state = replicate(self.state)
+        rngs = replicate(self._make_rngs())
+        r_state, metrics = self.p_train_step(r_state, batch, rngs)
+        self.state, metrics = unreplicate((r_state, metrics))
+        return metrics
 
     def fit(self, train_data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
         """
@@ -307,7 +311,7 @@ class BasicTrainer:
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
-            self._stateful_step_runner(train_data, self.train_step, self.train_hist["epochs"][-1]["train"],
+            self._stateful_step_runner(train_data, self.p_train_step, self.train_hist["epochs"][-1]["train"],
                                        callbacks.train_step_callbacks())
 
             # Update after first epoch sine they should all be the same size
@@ -316,7 +320,7 @@ class BasicTrainer:
 
             # Test model - Only run if there is val_data
             if val_data:
-                self._stateful_step_runner(val_data, self.test_step, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
                                            callbacks.test_step_callbacks())
 
                 # Update after first epoch sine they should be the same size
@@ -342,3 +346,20 @@ class BasicTrainer:
         callbacks.on_fit_end(self)
         live.stop()  # Close the live window since we aren't in a contex
         return
+
+    def map_model(self, data: tfd.Dataset) -> Iterator[Tuple[Features, ...]]:
+        """
+        Map the model over the dataset
+        Transforming it to include predictions
+        :param data: dataset to map over
+        :return: an iterator that yields [X, Y, Y_hat]
+        """
+        data = add_device_batch(data)
+        d_iter = data.as_numpy_iterator()
+        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        state = replicate(self.state)
+        while True:
+            if not (batch := next(d_iter, None)):
+                break
+            rngs = replicate(self._make_rngs())
+            yield self.p_apply_step(state, batch, rngs)
