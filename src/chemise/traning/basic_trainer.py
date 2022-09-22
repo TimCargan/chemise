@@ -24,6 +24,7 @@ from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
+flags.DEFINE_integer("prefetch_buffer", default=3, help="Number of batches to prefetch to the GPU")
 
 FLAGS = flags.FLAGS
 
@@ -71,7 +72,7 @@ def _sanity_error(data: Features) -> (bool, dict):
 
 def sanity_check(data: Batch):
     """
-    Check to see if the input and label data looks correct, i.e not all the same value
+    Check to see if the input and label data looks correct, i.e. not all the same value
     :param data:
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
@@ -109,9 +110,6 @@ class BasicTrainer:
     rng_keys: List[str] = field(default_factory=list, compare=False)
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
-
-    # Train Config Settings
-    pre_fetch: int = 2
 
     def __post_init__(self):
         self._next_prng = jax.random.PRNGKey(self.seed)
@@ -221,7 +219,7 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         step = int(self.state.step)
@@ -295,9 +293,6 @@ class BasicTrainer:
         else:
             logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
 
-        train_data = add_device_batch(train_data)
-        val_data = val_data if not val_data else add_device_batch(val_data)
-
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
         live.start()
@@ -354,9 +349,8 @@ class BasicTrainer:
         :param data: dataset to map over
         :return: an iterator that yields [X, Y, Y_hat]
         """
-        data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=self.pre_fetch))
+        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         state = replicate(self.state)
         while True:
             if not (batch := next(d_iter, None)):
