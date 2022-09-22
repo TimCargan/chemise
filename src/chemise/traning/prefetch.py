@@ -2,6 +2,7 @@ from absl import logging
 import queue
 from threading import Thread
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -20,6 +21,13 @@ class Prefetch(Thread):
 
 
     def run(self):
+        def _prefetch(data, devs):
+            flat = [jax.tree_util.tree_flatten(d) for d in data]
+            flat_n = [[n[0][l] for l in range(flat[0][0])] for n in flat]
+            stacked = [jnp.stack(x) for x in flat_n]
+            uf = jax.tree_util.tree_unflatten(flat[0][1], stacked)
+            return uf
+
         devices = jax.local_devices()
         first = next(self.data)
         batch_size = get_batch_size(first)
@@ -30,7 +38,7 @@ class Prefetch(Thread):
         tail = []
         for data in self.data:
             if len(shard_data) == len(devices):
-                self.q.put(jax.device_put_sharded(shard_data, devices))
+                self.q.put(_prefetch(shard_data, devices))
                 shard_data = []
             if get_batch_size(data) == batch_size:
                 shard_data.append(data)
@@ -39,13 +47,13 @@ class Prefetch(Thread):
 
         if shard_data:
             logging.info("Number of batches % devices != 0, added a step less that total devices")
-            self.q.put(jax.device_put_sharded(shard_data, devices[:len(shard_data)]))
+            self.q.put(_prefetch(shard_data, devices[:len(shard_data)]))
 
         if tail:
             logging.info("Small final batch added")
             tail_len = len(tail)
             assert tail_len <= len(devices), "More than device number of tails"
-            self.q.put(jax.device_put_sharded(shard_data, devices[:tail_len]))
+            self.q.put(_prefetch(shard_data, devices[:tail_len]))
 
         self.q.put(None)
 
