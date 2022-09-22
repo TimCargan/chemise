@@ -29,5 +29,6 @@ class Prefetch(Thread):
 
     def __next__(self):
         if data := self.q.get():
+            self.q.task_done()
             return data
         raise StopIteration
