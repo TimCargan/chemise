@@ -219,7 +219,7 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        # d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         step = int(self.state.step)
@@ -354,7 +354,7 @@ class BasicTrainer:
         """
         data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        # d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
         state = replicate(self.state)
         while True:
             if not (batch := next(d_iter, None)):

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-class Prefetch(Thread):
+class Prefetch_dev(Thread):
     """
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
@@ -18,7 +18,6 @@ class Prefetch(Thread):
         platform = jax.default_backend()
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
-
 
     def run(self):
         def _prefetch(data, devs):
@@ -32,7 +31,8 @@ class Prefetch(Thread):
         first = next(self.data)
         batch_size = get_batch_size(first)
 
-        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %d, ...]", len(devices), len(devices), batch_size)
+        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %d, ...]", len(devices),
+                      len(devices), batch_size)
 
         shard_data = [first]
         tail = []
@@ -55,6 +55,32 @@ class Prefetch(Thread):
             assert tail_len <= len(devices), "More than device number of tails"
             self.q.put(_prefetch(shard_data, devices[:tail_len]))
 
+        self.q.put(None)
+
+    def __iter__(self):
+        self.start()
+        return self
+
+    def __next__(self):
+        if data := self.q.get():
+            self.q.task_done()
+            return data
+        raise StopIteration
+
+
+class Prefetch(Thread):
+    """
+    Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
+    """
+
+    def __init__(self, data: iter, buffer_size: int = 3):
+        super(Prefetch, self).__init__()
+        self.data = data
+        self.q = queue.Queue(buffer_size)
+
+    def run(self):
+        for data in self.data:
+            self.q.put(data)
         self.q.put(None)
 
     def __iter__(self):
