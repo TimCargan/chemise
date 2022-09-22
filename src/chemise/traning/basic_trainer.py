@@ -160,6 +160,7 @@ class BasicTrainer:
         y = batch[1]
 
         GLOBAL_BATCH = np.product(list(y.values())[0].shape[:2])
+        rngs = self._rngs(rngs, state.step)
 
         @partial(jax.value_and_grad, has_aux=True)
         def step(params):
@@ -231,7 +232,6 @@ class BasicTrainer:
                 if not (batch := next(d_iter, None)):
                     break
                 callback.step_start_cb(self)
-                rngs = self._rngs(rngs, step)
                 r_state, metrics = step_fn(r_state, batch, rngs)
                 self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
