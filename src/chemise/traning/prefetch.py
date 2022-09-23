@@ -21,11 +21,16 @@ class Prefetch_dev(Thread):
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
     def iter(self):
-        def _prefetch(data, devs):
-            flat = [jax.tree_util.tree_flatten(d) for d in data]
-            flat_n = [[n[l] for n, _ in flat] for l in range(len(flat[0][0]))]
+        @jax.jit
+        def _stack(flat):
+            flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
             stacked = [jnp.stack(x) for x in flat_n]
-            uf = jax.tree_util.tree_unflatten(flat[0][1], stacked)
+            return stacked
+        def _prefetch(data, devs):
+            tree = jax.tree_util.tree_flatten(data[0])[1]
+            flat = [jax.tree_util.tree_flatten(d)[0] for d in data]
+            stacked = _stack(flat)
+            uf = jax.tree_util.tree_unflatten(tree, stacked)
             return uf
 
         devices = jax.local_devices()
@@ -39,7 +44,8 @@ class Prefetch_dev(Thread):
         tail = []
         for data in self.data:
             if len(shard_data) == len(devices):
-                yield _prefetch(shard_data, devices)
+                res = _prefetch(shard_data, devices)
+                yield res
                 shard_data = []
             if get_batch_size(data) == batch_size:
                 shard_data.append(data)
