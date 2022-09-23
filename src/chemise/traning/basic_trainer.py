@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from functools import partial, reduce
 from typing import Callable, Any, Tuple, List, Iterator
 
+import chex
 import jax
 import numpy as np
 from absl import logging, flags
@@ -98,7 +99,6 @@ class BasicTrainer:
      - Predict
      - TODO: Transform - same as predict but just add the predictions the input data
     """
-
     state: TrainState = field(compare=False)
     loss_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Num[Array, "..."]]
     metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], Result] = no_metrics_fn
@@ -134,7 +134,7 @@ class BasicTrainer:
         return rngs
 
     @partial(jax.jit, static_argnums=(0,))
-    def _rngs(self, key_dict: Rand_Dict, mixin: int) -> Rand_Dict:
+    def _rngs_mix(self, key_dict: Rand_Dict, mixin: int) -> Rand_Dict:
         """
         Faster way to get new rands that can be JIT'ed. Use flax mixin methods wrappers
         :param key_dict: dict of rands to update
@@ -144,7 +144,24 @@ class BasicTrainer:
         # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
+    @partial(jax.jit, static_argnums=(0,))
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: float = 1.0):
+        """
+            Run a single step and calculate the loss value.
+            Here so we only need on trace for train and eval per batch size
+            :param params: params of model
+            :return: [Loss, predictions]
+            """
+        x = batch[0]
+        y = batch[1]
+
+        y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
+        p_loss = self.loss_fn(y, y_pred)
+        loss = p_loss.sum() / global_batch
+        return loss, y_pred
+
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @chex.assert_max_traces(n=5)  # init, full batch, tail batch
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Train for a single step.
@@ -157,21 +174,10 @@ class BasicTrainer:
         y = batch[1]
 
         GLOBAL_BATCH = np.product(list(y.values())[0].shape[:2])
-        rngs = self._rngs(rngs, state.step)
+        rngs = self._rngs_mix(rngs, state.step)
 
-        @partial(jax.value_and_grad, has_aux=True)
-        def step(params):
-            """
-            Run a single step with grads calculated for backprop
-            :param params: params of model
-            :return: [Loss, predictions]
-            """
-            y_pred = state.apply_fn({'params': params}, x, rngs=rngs)
-            p_loss = self.loss_fn(y, y_pred)
-            loss = p_loss.sum() / GLOBAL_BATCH
-            return loss, y_pred
-
-        (loss, y_pred), grads = step(state.params)
+        step = jax.value_and_grad(self._step, has_aux=True)
+        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
@@ -201,8 +207,7 @@ class BasicTrainer:
         """
         x = batch[0]
         y = batch[1]
-        y_pred = state.apply_fn({'params': state.params}, x, rngs=rngs)
-        loss = self.loss_fn(batch[1], y_pred).mean()
+        loss, y_pred = self._step(state.params, batch, rngs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
@@ -358,12 +363,29 @@ class BasicTrainer:
         :param data: dataset to map over
         :return: an iterator that yields [X, Y, Y_hat]
         """
-        data = add_device_batch(data)
+        # data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
-        state = replicate(self.state)
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        r_state = replicate(self.state)
+        raw_rngs = replicate(self._make_rngs())
+        dev_batch_size = get_batch_size(r_state)
+        c = 0
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = replicate(self._make_rngs())
-            yield self.p_apply_step(state, batch, rngs)
+            rngs = self._rngs_mix(raw_rngs, c)
+            if (s := get_batch_size(batch)) < dev_batch_size:
+                r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
+                rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+            yield self.p_apply_step(r_state, batch, rngs)
+            c += 1
+
+    def reset(self):
+        """
+        Clear out the state and train history of the model. This is helpful for when you want to train the same
+        architecture multiple times to produce models as we can reuse the compiled functions.
+        :return:
+        """
+        self.state = None
+        self.train_hist = empty_train_hist()
+        return self
