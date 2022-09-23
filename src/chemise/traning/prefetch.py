@@ -54,7 +54,7 @@ class Prefetch_dev(Thread):
             logging.info("Small final batch added")
             tail_len = len(tail)
             assert tail_len <= len(devices), "More than device number of tails"
-            yield _prefetch(shard_data, devices[:tail_len])
+            yield _prefetch(tail, devices[:tail_len])
 
         # raise StopIteration
 
