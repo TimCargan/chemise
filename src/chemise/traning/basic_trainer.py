@@ -161,7 +161,6 @@ class BasicTrainer:
         return loss, y_pred
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @chex.assert_max_traces(n=5)  # init, full batch, tail batch
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
         """
         Train for a single step.
