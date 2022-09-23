@@ -34,7 +34,7 @@ class Prefetch_dev(Thread):
             uf = jax.tree_util.tree_unflatten(tree, stacked)
             return uf
         def _prefetch(data, devs):
-            return jax.device_put_sharded(data, devices)
+            return jax.device_put_sharded(data, devs)
 
         devices = jax.local_devices()
         first = next(self.data)
