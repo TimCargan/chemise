@@ -145,7 +145,7 @@ class BasicTrainer:
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: float = 1.0):
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
@@ -173,7 +173,7 @@ class BasicTrainer:
         x = batch[0]
         y = batch[1]
 
-        GLOBAL_BATCH = np.product(list(y.values())[0].shape[:2])
+        GLOBAL_BATCH = get_batch_size(batch, 2)
         rngs = self._rngs_mix(rngs, state.step)
 
         step = jax.value_and_grad(self._step, has_aux=True)
@@ -207,7 +207,8 @@ class BasicTrainer:
         """
         x = batch[0]
         y = batch[1]
-        loss, y_pred = self._step(state.params, batch, rngs)
+        gbs = get_batch_size(batch, 2)
+        loss, y_pred = self._step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
