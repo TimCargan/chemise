@@ -286,6 +286,7 @@ class BasicTrainer:
         :param num_epochs: number of epochs to appy the data
         :return:
         """
+        setup_start_time = time.monotonic()
         self.num_epochs = num_epochs
 
         train_cardinality = int(train_data.cardinality())
@@ -313,6 +314,10 @@ class BasicTrainer:
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)
+
+        duration = time.monotonic() - setup_start_time
+        duration = seconds_pretty(duration)
+        logging.info(f"Setup complete took: {duration}")
 
         for e in range(self.num_epochs):
             epoch_start_time = time.monotonic()

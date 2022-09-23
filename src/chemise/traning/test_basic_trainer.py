@@ -65,16 +65,16 @@ class BasicTrainer_Tests(parameterized.TestCase):
         self.assertContainsSubset(["val_loss", "loss", "met", "val_met"], hist.keys())
     def test_fit_calls_steps(self):
         # Mock out train and test since we don't want to do the work
-        self.runner.train_step = make_step_mock("train")
-        self.runner.test_step = make_step_mock("test")
+        self.runner.p_train_step = make_step_mock("train")
+        self.runner.p_test_step = make_step_mock("test")
 
         self.runner.fit(self.data, num_epochs=1)
 
-        self.assertEqual(100 // 10, self.runner.train_step.call_count)
-        self.assertEqual(0, self.runner.test_step.call_count)
+        self.assertEqual(100 // 10, self.runner.p_train_step.call_count)
+        self.assertEqual(0, self.runner.p_test_step.call_count)
 
         self.runner.fit(self.data, self.data, num_epochs=1)
-        self.assertEqual(10, self.runner.test_step.call_count)
+        self.assertEqual(10, self.runner.p_test_step.call_count)
 
 
 class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
