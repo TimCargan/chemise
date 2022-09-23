@@ -141,12 +141,15 @@ class Prefetch(Thread):
         raise StopIteration
 
 
-def get_batch_size(ds) -> int:
+def get_batch_size(ds, batch_dims=1) -> int:
     """
     Get the likely batch size of a pytree of data
     :param ds:
+    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
+    if grater than 1 returns the product of the dims
     :return:
     """
     flat, _ = jax.tree_util.tree_flatten(ds)
     shape = np.shape(flat[0])
-    return shape[0]
+    batch_size = np.prod(shape[:batch_dims])
+    return int(batch_size)

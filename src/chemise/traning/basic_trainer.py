@@ -7,6 +7,7 @@ from functools import partial, reduce
 from typing import Callable, Any, Tuple, List, Iterator
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
@@ -18,7 +19,7 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import Prefetch, get_batch_size, Prefetch_dev
+from chemise.traning.prefetch import get_batch_size, Prefetch_dev
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
@@ -57,6 +58,7 @@ def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
     return data
 
 
+@jax.jit
 def _sanity_error(data: Features) -> (bool, dict):
     """
     Determine if all values for each key in a dict of Num's are the same
@@ -64,7 +66,7 @@ def _sanity_error(data: Features) -> (bool, dict):
     :param data:
     :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
     """
-    feats = {f"{k}": np.all(v == v[0], axis=None) for k, v in data.items()}
+    feats = {f"{k}": jnp.all(v == v[0], axis=None) for k, v in data.items()}
     is_good = reduce(operator.or_, feats.values(), False)
     return is_good, feats
 
@@ -98,7 +100,6 @@ class BasicTrainer:
      - Predict
      - TODO: Transform - same as predict but just add the predictions the input data
     """
-
     state: TrainState = field(compare=False)
     loss_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Num[Array, "..."]]
     metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], Result] = no_metrics_fn
@@ -134,7 +135,7 @@ class BasicTrainer:
         return rngs
 
     @partial(jax.jit, static_argnums=(0,))
-    def _rngs(self, key_dict: Rand_Dict, mixin: int) -> Rand_Dict:
+    def _rngs_mix(self, key_dict: Rand_Dict, mixin: int) -> Rand_Dict:
         """
         Faster way to get new rands that can be JIT'ed. Use flax mixin methods wrappers
         :param key_dict: dict of rands to update
@@ -143,6 +144,22 @@ class BasicTrainer:
         """
         # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
+        """
+            Run a single step and calculate the loss value.
+            Here so we only need on trace for train and eval per batch size
+            :param params: params of model
+            :return: [Loss, predictions]
+            """
+        x = batch[0]
+        y = batch[1]
+
+        y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
+        p_loss = self.loss_fn(y, y_pred)
+        loss = p_loss.sum() / global_batch
+        return loss, y_pred
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
@@ -156,22 +173,11 @@ class BasicTrainer:
         x = batch[0]
         y = batch[1]
 
-        GLOBAL_BATCH = np.product(list(y.values())[0].shape[:2])
-        rngs = self._rngs(rngs, state.step)
+        GLOBAL_BATCH = get_batch_size(batch, 2)
+        rngs = self._rngs_mix(rngs, state.step)
 
-        @partial(jax.value_and_grad, has_aux=True)
-        def step(params):
-            """
-            Run a single step with grads calculated for backprop
-            :param params: params of model
-            :return: [Loss, predictions]
-            """
-            y_pred = state.apply_fn({'params': params}, x, rngs=rngs)
-            p_loss = self.loss_fn(y, y_pred)
-            loss = p_loss.sum() / GLOBAL_BATCH
-            return loss, y_pred
-
-        (loss, y_pred), grads = step(state.params)
+        step = jax.value_and_grad(self._step, has_aux=True)
+        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
@@ -187,7 +193,7 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
+        _, y_pred = self._step(state.params, batch, rngs)
         return (*batch, y_pred)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
@@ -201,8 +207,8 @@ class BasicTrainer:
         """
         x = batch[0]
         y = batch[1]
-        y_pred = state.apply_fn({'params': state.params}, x, rngs=rngs)
-        loss = self.loss_fn(batch[1], y_pred).mean()
+        gbs = get_batch_size(batch, 2)
+        loss, y_pred = self._step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
@@ -281,6 +287,7 @@ class BasicTrainer:
         :param num_epochs: number of epochs to appy the data
         :return:
         """
+        setup_start_time = time.monotonic()
         self.num_epochs = num_epochs
 
         train_cardinality = int(train_data.cardinality())
@@ -292,7 +299,9 @@ class BasicTrainer:
             self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
-        first = train_data.as_numpy_iterator().next()
+        logging.debug("Sanity Check load data")
+        first = train_data.take(1).as_numpy_iterator().next()
+        logging.debug("Sanity Check run")
         pass_sanity, input_errors = sanity_check(first)
         if pass_sanity:
             logging.info("Sanity check passed: %s", input_errors)
@@ -309,12 +318,18 @@ class BasicTrainer:
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)
 
+        duration = time.monotonic() - setup_start_time
+        duration = seconds_pretty(duration)
+        logging.info(f"Setup complete took: {duration}")
+
         for e in range(self.num_epochs):
+            logging.debug("Starting epoch %d", e)
             epoch_start_time = time.monotonic()
             callbacks.on_epoch_start(self)
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
+            logging.debug("Starting train step of epoch %d", e)
             self._stateful_step_runner(train_data, self.p_train_step, self.train_hist["epochs"][-1]["train"],
                                        callbacks.train_step_callbacks())
 
@@ -324,6 +339,7 @@ class BasicTrainer:
 
             # Test model - Only run if there is val_data
             if val_data:
+                logging.debug("Starting val step of epoch %d", e)
                 self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
                                            callbacks.test_step_callbacks())
 
@@ -332,6 +348,7 @@ class BasicTrainer:
                     self.eval_steps = len(self.train_hist["epochs"][-1]["test"])
 
             # End of epoc metrics
+            logging.debug("Epoch metrics epoch %d", e)
             mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
             mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
             mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
@@ -358,12 +375,29 @@ class BasicTrainer:
         :param data: dataset to map over
         :return: an iterator that yields [X, Y, Y_hat]
         """
-        data = add_device_batch(data)
+        # data = add_device_batch(data)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
-        state = replicate(self.state)
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        r_state = replicate(self.state)
+        raw_rngs = self._make_rngs()
+        dev_batch_size = get_batch_size(r_state)
+        c = 0
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = replicate(self._make_rngs())
-            yield self.p_apply_step(state, batch, rngs)
+            rngs = replicate(self._rngs_mix(raw_rngs, c))
+            if (s := get_batch_size(batch)) < dev_batch_size:
+                r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
+                rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+            yield self.p_apply_step(r_state, batch, rngs)
+            c += 1
+
+    def reset(self):
+        """
+        Clear out the state and train history of the model. This is helpful for when you want to train the same
+        architecture multiple times to produce models as we can reuse the compiled functions.
+        :return:
+        """
+        self.state = None
+        self.train_hist = empty_train_hist()
+        return self
