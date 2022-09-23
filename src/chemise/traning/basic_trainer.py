@@ -368,13 +368,13 @@ class BasicTrainer:
         d_iter = data.as_numpy_iterator()
         d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
         r_state = replicate(self.state)
-        raw_rngs = replicate(self._make_rngs())
+        raw_rngs = self._make_rngs()
         dev_batch_size = get_batch_size(r_state)
         c = 0
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = self._rngs_mix(raw_rngs, c)
+            rngs = replicate(self._rngs_mix(raw_rngs, c))
             if (s := get_batch_size(batch)) < dev_batch_size:
                 r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                 rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
