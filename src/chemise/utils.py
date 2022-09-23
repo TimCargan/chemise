@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import numpy as np
 
 
@@ -57,16 +58,21 @@ def list_dict_to_dict_list(dict_list):
     res = {k: [x[k] for x in dict_list] for k in keys}
     return res
 
-def datasetspec_to_zero(ds):
+
+def datasetspec_to_zero(ds, batch_size: int = None):
     """
     Convert a dataset elementSpec to `np.zeros` with the same shape
-    :param ds:
+    :param ds: Data Spec
+    :param batch_size: Default batch size to use if None
     :return:
     """
     if isinstance(ds, tuple):
-        return tuple(datasetspec_to_zero(el) for el in ds)
+        return tuple(datasetspec_to_zero(el, batch_size=batch_size) for el in ds)
 
     if isinstance(ds, dict):
-        return {k: datasetspec_to_zero(v) for k, v in ds.items()}
+        return {k: datasetspec_to_zero(v, batch_size=batch_size) for k, v in ds.items()}
 
-    return np.zeros(shape=ds.shape, dtype=ds.dtype.as_numpy_dtype)
+    # Replace batch size if None
+    shape = ds.shape
+    shape = shape[0] if shape[0] else batch_size, *shape[1:]
+    return np.zeros(shape=shape, dtype=ds.dtype.as_numpy_dtype)
