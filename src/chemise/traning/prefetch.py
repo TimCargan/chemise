@@ -1,6 +1,7 @@
 import queue
 from threading import Thread
 
+import flax.training.prefetch_iterator
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,12 +27,14 @@ class Prefetch_dev(Thread):
             flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
             stacked = [jnp.stack(x) for x in flat_n]
             return stacked
-        def _prefetch(data, devs):
+        def _prefetch_s(data, devs):
             tree = jax.tree_util.tree_flatten(data[0])[1]
             flat = [jax.tree_util.tree_flatten(d)[0] for d in data]
             stacked = _stack(flat)
             uf = jax.tree_util.tree_unflatten(tree, stacked)
             return uf
+        def _prefetch(data, devs):
+            jax.device_put_sharded(data, devices)
 
         devices = jax.local_devices()
         first = next(self.data)
