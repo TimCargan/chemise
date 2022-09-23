@@ -4,12 +4,11 @@ import operator
 import time
 from dataclasses import dataclass, field
 from functools import partial, reduce
-from typing import Callable, Any, Tuple, List, Iterator, Dict
+from typing import Callable, Any, Tuple, List, Iterator
 
 import jax
 import numpy as np
 from absl import logging, flags
-from flax.core.scope import LazyRng
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import Num, Array
@@ -19,7 +18,7 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import Prefetch
+from chemise.traning.prefetch import Prefetch, get_batch_size, Prefetch_dev
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
@@ -219,22 +218,29 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        d_iter = iter(Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer))
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
+        rngs = replicate(self._make_rngs())
+        dev_batch_size = get_batch_size(r_state)
+
         step = int(self.state.step)
-        raw_rngs = self._make_rngs()
-        rngs = replicate(raw_rngs)
         while True:
+            callback.step_start_cb(self)
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
-                callback.step_start_cb(self)
+
+                if (s := get_batch_size(batch)) < dev_batch_size:
+                    r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
+                    rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+
                 r_state, metrics = step_fn(r_state, batch, rngs)
                 self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
                 hist.append(metrics)
-                step += 1 #int(self.state.step)  # eval step keep in sync with GPU
+                step += 1
                 callback.step_end_cb(self)
+
         callback.end_cb(self)
 
     """ 
@@ -297,8 +303,8 @@ class BasicTrainer:
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
         live.start()
 
-        train_data = add_device_batch(train_data)
-        val_data = add_device_batch(val_data) if val_data else val_data
+        # train_data = add_device_batch(train_data)
+        # val_data = add_device_batch(val_data) if val_data else val_data
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)

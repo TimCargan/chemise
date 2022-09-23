@@ -1,9 +1,10 @@
-from absl import logging
 import queue
 from threading import Thread
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+from absl import logging
 
 
 class Prefetch_dev(Thread):
@@ -12,7 +13,7 @@ class Prefetch_dev(Thread):
     """
 
     def __init__(self, data: iter, buffer_size: int = 3):
-        super(Prefetch, self).__init__()
+        super(Prefetch_dev, self).__init__()
         self.data = data
         self.q = queue.Queue(buffer_size)
         platform = jax.default_backend()
@@ -22,7 +23,7 @@ class Prefetch_dev(Thread):
     def run(self):
         def _prefetch(data, devs):
             flat = [jax.tree_util.tree_flatten(d) for d in data]
-            flat_n = [[n[0][l] for l in range(flat[0][0])] for n in flat]
+            flat_n = [[n[l] for n, _ in flat] for l in range(len(flat[0][0]))]
             stacked = [jnp.stack(x) for x in flat_n]
             uf = jax.tree_util.tree_unflatten(flat[0][1], stacked)
             return uf
