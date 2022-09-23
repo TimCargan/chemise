@@ -20,7 +20,7 @@ class Prefetch_dev(Thread):
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
-    def run(self):
+    def iter(self):
         def _prefetch(data, devs):
             flat = [jax.tree_util.tree_flatten(d) for d in data]
             flat_n = [[n[l] for n, _ in flat] for l in range(len(flat[0][0]))]
@@ -39,7 +39,7 @@ class Prefetch_dev(Thread):
         tail = []
         for data in self.data:
             if len(shard_data) == len(devices):
-                self.q.put(_prefetch(shard_data, devices))
+                yield _prefetch(shard_data, devices)
                 shard_data = []
             if get_batch_size(data) == batch_size:
                 shard_data.append(data)
@@ -48,21 +48,20 @@ class Prefetch_dev(Thread):
 
         if shard_data:
             logging.info("Number of batches % devices != 0, added a step less that total devices")
-            self.q.put(_prefetch(shard_data, devices[:len(shard_data)]))
+            yield _prefetch(shard_data, devices[:len(shard_data)])
 
         if tail:
             logging.info("Small final batch added")
             tail_len = len(tail)
             assert tail_len <= len(devices), "More than device number of tails"
-            self.q.put(_prefetch(shard_data, devices[:tail_len]))
+            yield _prefetch(shard_data, devices[:tail_len])
 
-        self.q.put(None)
+        # raise StopIteration
 
     def __iter__(self):
-        self.start()
         return self
 
-    def __next__(self):
+    def __next(self):
         if data := self.q.get():
             self.q.task_done()
             return data

@@ -218,7 +218,7 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = iter(Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer))
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
