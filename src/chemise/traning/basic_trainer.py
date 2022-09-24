@@ -25,6 +25,7 @@ from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
 flags.DEFINE_integer("prefetch_buffer", default=3, help="Number of batches to prefetch to the GPU")
+flags.DEFINE_boolean("sanity_check", default=True, help="Run sanity check on input data")
 
 FLAGS = flags.FLAGS
 
@@ -71,7 +72,7 @@ def _sanity_error(data: Features) -> (bool, dict):
     return is_good, feats
 
 
-def sanity_check(data: Batch):
+def _sanity_check(data: Batch):
     """
     Check to see if the input and label data looks correct, i.e. not all the same value
     :param data:
@@ -83,6 +84,17 @@ def sanity_check(data: Batch):
     labels = {f"O_{k}": np.reshape(data[1][k], (-1,))[..., 0] for k, v in labels.items() if v}
     is_good = np.logical_not(np.logical_or(r_inputs, r_labels))
     return is_good, dict(**inputs, **labels)
+
+
+def sanity_check(train_data: tfd.Dataset):
+    logging.debug("Sanity Check load data")
+    first = train_data.take(1).as_numpy_iterator().next()
+    logging.debug("Sanity Check run")
+    pass_sanity, input_errors = _sanity_check(first)
+    if pass_sanity:
+        logging.info("Sanity check passed: %s", input_errors)
+    else:
+        logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
 
 
 @jax.tree_util.Partial
@@ -299,14 +311,8 @@ class BasicTrainer:
             self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
-        logging.debug("Sanity Check load data")
-        first = train_data.take(1).as_numpy_iterator().next()
-        logging.debug("Sanity Check run")
-        pass_sanity, input_errors = sanity_check(first)
-        if pass_sanity:
-            logging.info("Sanity check passed: %s", input_errors)
-        else:
-            logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
+        if FLAGS.sanity_check:
+            sanity_check(train_data)
 
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
