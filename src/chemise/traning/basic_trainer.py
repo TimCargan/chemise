@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from functools import partial, reduce
 from typing import Callable, Any, Tuple, List, Iterator
 
-import chex
 import jax
+import jax.numpy as jnp
 import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
@@ -19,7 +19,7 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import Prefetch, get_batch_size, Prefetch_dev
+from chemise.traning.prefetch import get_batch_size, Prefetch_dev
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
@@ -58,6 +58,7 @@ def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
     return data
 
 
+@jax.jit
 def _sanity_error(data: Features) -> (bool, dict):
     """
     Determine if all values for each key in a dict of Num's are the same
@@ -65,7 +66,7 @@ def _sanity_error(data: Features) -> (bool, dict):
     :param data:
     :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
     """
-    feats = {f"{k}": np.all(v == v[0], axis=None) for k, v in data.items()}
+    feats = {f"{k}": jnp.all(v == v[0], axis=None) for k, v in data.items()}
     is_good = reduce(operator.or_, feats.values(), False)
     return is_good, feats
 
@@ -298,7 +299,9 @@ class BasicTrainer:
             self.eval_steps = eval_cardinality if eval_cardinality > 0 else None
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
+        logging.debug("Sanity Check load data")
         first = train_data.as_numpy_iterator().next()
+        logging.debug("Sanity Check run")
         pass_sanity, input_errors = sanity_check(first)
         if pass_sanity:
             logging.info("Sanity check passed: %s", input_errors)
@@ -320,11 +323,13 @@ class BasicTrainer:
         logging.info(f"Setup complete took: {duration}")
 
         for e in range(self.num_epochs):
+            logging.debug("Starting epoch %d", e)
             epoch_start_time = time.monotonic()
             callbacks.on_epoch_start(self)
             self.train_hist["epochs"].append({"train": [], "test": []})
 
             # Run Train Step
+            logging.debug("Starting train step of epoch %d", e)
             self._stateful_step_runner(train_data, self.p_train_step, self.train_hist["epochs"][-1]["train"],
                                        callbacks.train_step_callbacks())
 
@@ -334,6 +339,7 @@ class BasicTrainer:
 
             # Test model - Only run if there is val_data
             if val_data:
+                logging.debug("Starting val step of epoch %d", e)
                 self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
                                            callbacks.test_step_callbacks())
 
@@ -342,6 +348,7 @@ class BasicTrainer:
                     self.eval_steps = len(self.train_hist["epochs"][-1]["test"])
 
             # End of epoc metrics
+            logging.debug("Epoch metrics epoch %d", e)
             mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
             mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
             mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
