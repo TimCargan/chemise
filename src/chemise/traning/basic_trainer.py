@@ -300,7 +300,7 @@ class BasicTrainer:
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
         logging.debug("Sanity Check load data")
-        first = train_data.as_numpy_iterator().next()
+        first = train_data.take(1).as_numpy_iterator().next()
         logging.debug("Sanity Check run")
         pass_sanity, input_errors = sanity_check(first)
         if pass_sanity:
