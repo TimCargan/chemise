@@ -193,7 +193,7 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        y_pred = state.apply_fn({'params': state.params}, batch[0], rngs=rngs)
+        _, y_pred = self._step(state.params, batch, rngs)
         return (*batch, y_pred)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
