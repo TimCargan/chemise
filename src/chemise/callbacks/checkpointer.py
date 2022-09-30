@@ -24,7 +24,7 @@ class Checkpointer(Callback):
 
     def on_fit_start(self, trainer: BasicTrainer):
         if self.auto_restore:
-            logging.WARN("Restoring checkpoint")
+            logging.warning("Restoring checkpoint at start of run")
             trainer.state = cp.restore_checkpoint(self.ckpt_dir, trainer.state)
 
     def on_epoch_end(self, trainer: BasicTrainer):
