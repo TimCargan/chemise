@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from absl import logging
 from flax.training import checkpoints as cp
 
 from chemise.callbacks.abc_callback import Callback
@@ -21,8 +22,9 @@ class Checkpointer(Callback):
 
     auto_restore: bool = False
 
-    def on_fit_begin(self, trainer: BasicTrainer):
+    def on_fit_start(self, trainer: BasicTrainer):
         if self.auto_restore:
+            logging.warning("Restoring checkpoint at start of run")
             trainer.state = cp.restore_checkpoint(self.ckpt_dir, trainer.state)
 
     def on_epoch_end(self, trainer: BasicTrainer):
