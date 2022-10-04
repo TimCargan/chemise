@@ -58,7 +58,7 @@ class Prefetch_dev(Thread):
 
                 # End of batch, add un-even to queue
                 batch_sizes = {}
-                for i, s in enumerate([get_batch_size(el, batch_dims=batch_dims) for el in batch]):
+                for i, s in enumerate([get_batch_dims(el, batch_dims=batch_dims) for el in batch]):
                     cur = batch_sizes.get(s, [])
                     cur.append(i)
                     batch_sizes[s] = cur
@@ -156,7 +156,7 @@ class Prefetch(Thread):
         raise StopIteration
 
 
-def get_batch_dims(ds, batch_dims=1) -> list[int]:
+def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
     """
     Get the likely batch size of a pytree of data
     :param ds:
