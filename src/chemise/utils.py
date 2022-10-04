@@ -14,11 +14,13 @@ def make_metric_string(metrics: dict[str, str | np.ndarray | float], precision=4
     def value_format(v):
         if isinstance(v, str):
             return v
+        if isinstance(v, np.ndarray):
+            return [value_format(x) for x in v]
         try:
             fv = float(v)
             return f"{fv:.{precision}}"
         except TypeError:
-            raise TypeError("Can only log scaler variables")
+            raise TypeError(f"Unsupported type ({type(v)}) to log")
 
     met_string = "{}: {}"
     return f"-- {', '.join([met_string.format(k, value_format(v)) for k, v in metrics.items()])}"
@@ -47,7 +49,7 @@ def seconds_pretty(seconds: float) -> str:
 
 def mean_reduce_dicts(dict_list):
     transp = list_dict_to_dict_list(dict_list)
-    res = {k: np.mean(v) for k, v in transp.items()}
+    res = {k: np.nanmean(np.stack(v), axis=0) for k, v in transp.items()}
     return res
 
 
@@ -59,11 +61,12 @@ def list_dict_to_dict_list(dict_list):
     return res
 
 
-def datasetspec_to_zero(ds, batch_size: int = None):
+def datasetspec_to_zero(ds, batch_size: int = None, force_size: bool = False):
     """
     Convert a dataset elementSpec to `np.zeros` with the same shape
     :param ds: Data Spec
     :param batch_size: Default batch size to use if None
+    :param force_size: Overwrite the batch size
     :return:
     """
     if isinstance(ds, tuple):
@@ -74,5 +77,5 @@ def datasetspec_to_zero(ds, batch_size: int = None):
 
     # Replace batch size if None
     shape = ds.shape
-    shape = shape[0] if shape[0] else batch_size, *shape[1:]
+    shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
     return np.zeros(shape=shape, dtype=ds.dtype.as_numpy_dtype)
