@@ -86,11 +86,9 @@ def _sanity_check(data: Batch):
     return is_good, dict(**inputs, **labels)
 
 
-def sanity_check(train_data: tfd.Dataset):
-    logging.debug("Sanity Check load data")
-    first = train_data.take(1).as_numpy_iterator().next()
+def sanity_check(el: Batch):
     logging.debug("Sanity Check run")
-    pass_sanity, input_errors = _sanity_check(first)
+    pass_sanity, input_errors = _sanity_check(el)
     if pass_sanity:
         logging.info("Sanity check passed: %s", input_errors)
     else:
@@ -174,13 +172,23 @@ class BasicTrainer:
         return loss, y_pred
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
-        Train for a single step.
+        Train for a single step. This has a pmap so will use all GPUs
         TODO:
          - support multiple output / multi loss via dicts akin to keras
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
+        """
+        return self._p_train_step(state, batch, rngs)
+
+    def _p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+        """
+        Unwrapped train step, helpful for inheritance where they want to reorder / not jit or pmap
+        :param state:
+        :param batch:
+        :param rngs:
+        :return:
         """
         x = batch[0]
         y = batch[1]
@@ -197,7 +205,7 @@ class BasicTrainer:
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -205,11 +213,14 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
+        return self._p_apply_step(state, batch, rngs)
+
+    def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
         _, y_pred = self._step(state.params, batch, rngs)
         return (*batch, y_pred)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> State_Result:
+    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
         :param state: model state object
@@ -217,6 +228,9 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
+        return self._p_test_step(state, batch, rngs)
+
+    def _p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         x = batch[0]
         y = batch[1]
         gbs = get_batch_size(batch, 2)
@@ -225,9 +239,11 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback) -> None:
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
+                              training: bool = True) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
+        :param training: 
         :param data: data to iterate over
         :param step_fn: the step function to call, must be
         :param hist:
@@ -260,6 +276,11 @@ class BasicTrainer:
                 callback.step_end_cb(self)
 
         callback.end_cb(self)
+
+    @staticmethod
+    def get_first_el(data: tfd.Dataset):
+        first = next(data.take(1).as_numpy_iterator())
+        return first
 
     """ 
     Standard Public interfaces, here is where the code that a standard user of the API
@@ -312,7 +333,9 @@ class BasicTrainer:
 
         # Check to make sure the data isn't all the same value. It's happened, it's a pain
         if FLAGS.sanity_check:
-            sanity_check(train_data)
+            logging.debug("Sanity Check load data")
+            first_el = self.get_first_el(train_data)
+            sanity_check(first_el)
 
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
@@ -347,7 +370,7 @@ class BasicTrainer:
             if val_data:
                 logging.debug("Starting val step of epoch %d", e)
                 self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
-                                           callbacks.test_step_callbacks())
+                                           callbacks.test_step_callbacks(), training=False)
 
                 # Update after first epoch sine they should be the same size
                 if self.eval_steps is None:
@@ -355,14 +378,11 @@ class BasicTrainer:
 
             # End of epoc metrics
             logging.debug("Epoch metrics epoch %d", e)
-            mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
-            mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
-            mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
-            mets = dict(**mean_train, **mean_test)
-            self.train_hist["train"].append(mets)
 
-            # TODO: Maybe move this to a logging callback
+            mets = self.epoc_metrics()
+            self.train_hist["train"].append(mets)
             met = make_metric_string(mets)
+
             duration = time.monotonic() - epoch_start_time
             duration = seconds_pretty(duration)
             logging.info(f"Epoch: {e} - {duration}  {met}")
@@ -373,6 +393,14 @@ class BasicTrainer:
         callbacks.on_fit_end(self)
         live.stop()  # Close the live window since we aren't in a contex
         return
+
+    def epoc_metrics(self):
+        # TODO: Maybe move this to a logging callback
+        mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
+        mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
+        mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
+        mets = dict(**mean_train, **mean_test)
+        return mets
 
     def map_model(self, data: tfd.Dataset) -> Iterator[Tuple[Features, ...]]:
         """

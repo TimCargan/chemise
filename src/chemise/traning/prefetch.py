@@ -3,7 +3,6 @@ import itertools
 import queue
 from threading import Thread
 
-import flax.training.prefetch_iterator
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -24,18 +23,25 @@ class Prefetch_dev(Thread):
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
-    def iter(self):
+    def iter(self, with_meta=False, batch_dims:int = 1):
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
         def _prefetch(data, devs):
+            if with_meta:
+                batch = [d[0] for d in data]
+                meta = data[0][1:]
+                prefetched_data = jax.device_put_sharded(batch, devs)
+                return (prefetched_data, *meta)
+
             return jax.device_put_sharded(data, devs)
 
         first = next(self.data)
-        batch_size = get_batch_size(first)
-        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %d, ...]", len(devices),
-                      len(devices), batch_size)
+        batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
+        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
+                      len(devices), ", ".join(str(i) for i in batch_dim_size))
 
+        batch_size = int(np.prod(batch_dim_size))
         shard_data = [first] + list(itertools.islice(self.data, dev_count - 1))
         queue.append(_prefetch(shard_data, devices[:len(shard_data)]))
 
@@ -45,21 +51,37 @@ class Prefetch_dev(Thread):
                 num_shards = len(batch)
                 if num_shards < 1:
                     return
+
                 # 1 shard or n shard of all the same size
-                if num_shards == 1 or (num_shards > 1 and get_batch_size(batch[-1]) == batch_size):
+                mask_match = True
+                if with_meta:
+                    masks = [list(el[1]) for el in batch]
+                    mask_match = masks.count(masks[0]) == len(masks)
+
+                if num_shards == 1 or (mask_match and (bs := [get_batch_dims(el, batch_dims=batch_dims) for el in batch]).count(bs[0]) == num_shards):
                     queue.append(_prefetch(batch, devices[: num_shards]))
                     return
-                # n shards where we assume all but the last are the same
-                # (if this doesn't hold something funky happened batching)
-                n_shards, last_shard = batch[:-1], batch[-1:]
-                assert get_batch_size(n_shards[-1]) == batch_size, "Multiple batches of unequal size"
-                queue.append(_prefetch(n_shards, devices[: num_shards - 1]))
-                queue.append(_prefetch(last_shard, devices[: 1]))
+                else:
+                    # End of batch just use one GPU for now, add un-even to queue
+                    for el in batch:
+                        queue.append(_prefetch([el], devices[: 1]))
+                    # # End of batch, add un-even to queue
+                    # batch_sizes = collections.defaultdict(list)
+                    # for i, s in enumerate(bs):
+                    #     batch_sizes[s].append(i)
+                    #
+                    # logging.debug(f"End of batch things, {batch_sizes}")
+                    #
+                    # sizes = sorted(batch_sizes.keys(), reverse=True)
+                    # for bs in sizes:
+                    #     batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
+                    #     queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
         enqueue(self.buffer_size - 1)  # Fill up the buffer, less the first already in.
         while queue:
             yield queue.popleft()
             enqueue(1)
+
     def iter_old(self):
         @jax.jit
         def _stack(flat):
@@ -141,7 +163,7 @@ class Prefetch(Thread):
         raise StopIteration
 
 
-def get_batch_size(ds, batch_dims=1) -> int:
+def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
     """
     Get the likely batch size of a pytree of data
     :param ds:
@@ -151,5 +173,17 @@ def get_batch_size(ds, batch_dims=1) -> int:
     """
     flat, _ = jax.tree_util.tree_flatten(ds)
     shape = np.shape(flat[0])
-    batch_size = np.prod(shape[:batch_dims])
+    return shape[:batch_dims]
+
+
+def get_batch_size(ds, batch_dims=1) -> int:
+    """
+    Get the likely batch size of a pytree of data
+    :param ds:
+    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
+    if grater than 1 returns the product of the dims
+    :return:
+    """
+    bds = get_batch_dims(ds, batch_dims)
+    batch_size = np.prod(bds)
     return int(batch_size)
