@@ -85,7 +85,8 @@ class VectorTrainer(BasicTrainer):
         d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True, batch_dims=2)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
-        rngs = replicate(self._make_rngs())
+        raw_rngs = self._make_rngs()
+        rngs = replicate(raw_rngs)
         dev_batch_size = get_batch_size(r_state)
 
         step_shape = np.shape(self.state.step)
@@ -127,8 +128,15 @@ class VectorTrainer(BasicTrainer):
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
-                r_state, metrics = step_fn(r_state, batch, rngs)
-                self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
+                    r_state, metrics = step_fn(r_state, batch, rngs)
+                    self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
+
+                    logging.debug("Re replicate")
+                    r_state = replicate(self.state)
+                    rngs = replicate(raw_rngs)
+                else:
+                    r_state, metrics = step_fn(r_state, batch, rngs)
+                    self.state, metrics = unreplicate((r_state, metrics))  # un-rep
 
                 # Mask out bad results with Nans
                 if not np.all(mask):
