@@ -39,7 +39,7 @@ class Prefetch_dev(Thread):
         first = next(self.data)
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
-                      len(devices), ",".join(str(i) for i in batch_dim_size))
+                      len(devices), ", ".join(str(i) for i in batch_dim_size))
 
         batch_size = int(np.prod(batch_dim_size))
         shard_data = [first] + list(itertools.islice(self.data, dev_count - 1))
