@@ -123,6 +123,7 @@ class VectorTrainer(BasicTrainer):
                                 saved_states[i] = None
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
+                    logging.debug("Dev batch size doesnt match num devices")
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 

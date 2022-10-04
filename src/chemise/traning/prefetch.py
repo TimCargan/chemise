@@ -63,6 +63,8 @@ class Prefetch_dev(Thread):
                     cur.append(i)
                     batch_sizes[s] = cur
 
+                logging.debug(f"End of batch things, {batch_sizes}")
+
                 sizes = sorted(batch_sizes.keys(), reverse=True)
                 for bs in sizes:
                     batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
