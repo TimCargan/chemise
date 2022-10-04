@@ -82,7 +82,7 @@ class VectorTrainer(BasicTrainer):
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True)
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True, batch_dims=2)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
