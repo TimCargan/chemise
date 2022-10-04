@@ -3,7 +3,6 @@ import itertools
 import queue
 from threading import Thread
 
-import flax.training.prefetch_iterator
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -24,11 +23,17 @@ class Prefetch_dev(Thread):
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
-    def iter(self):
+    def iter(self, with_meta=False):
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
         def _prefetch(data, devs):
+            if with_meta:
+                batch = [d[0] for d in data]
+                meta = data[0][1:]
+                prefetched_data = jax.device_put_sharded(batch, devs)
+                return (prefetched_data, *meta)
+
             return jax.device_put_sharded(data, devs)
 
         first = next(self.data)
@@ -49,17 +54,24 @@ class Prefetch_dev(Thread):
                 if num_shards == 1 or (num_shards > 1 and get_batch_size(batch[-1]) == batch_size):
                     queue.append(_prefetch(batch, devices[: num_shards]))
                     return
-                # n shards where we assume all but the last are the same
-                # (if this doesn't hold something funky happened batching)
-                n_shards, last_shard = batch[:-1], batch[-1:]
-                assert get_batch_size(n_shards[-1]) == batch_size, "Multiple batches of unequal size"
-                queue.append(_prefetch(n_shards, devices[: num_shards - 1]))
-                queue.append(_prefetch(last_shard, devices[: 1]))
+
+                # End of batch, add un-even to queue
+                batch_sizes = {}
+                for i, s in enumerate([get_batch_size(el) for el in batch]):
+                    cur = batch_sizes.get(s, [])
+                    cur.append(i)
+                    batch_sizes[s] = cur
+
+                sizes = sorted(batch_sizes.keys(), reverse=True)
+                for bs in sizes:
+                    batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
+                    queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
         enqueue(self.buffer_size - 1)  # Fill up the buffer, less the first already in.
         while queue:
             yield queue.popleft()
             enqueue(1)
+
     def iter_old(self):
         @jax.jit
         def _stack(flat):
