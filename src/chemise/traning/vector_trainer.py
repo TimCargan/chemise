@@ -31,7 +31,7 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None))
+    @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step.
