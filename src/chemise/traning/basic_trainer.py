@@ -370,7 +370,7 @@ class BasicTrainer:
             if val_data:
                 logging.debug("Starting val step of epoch %d", e)
                 self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
-                                           callbacks.test_step_callbacks())
+                                           callbacks.test_step_callbacks(), training=False)
 
                 # Update after first epoch sine they should be the same size
                 if self.eval_steps is None:
