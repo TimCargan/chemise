@@ -126,18 +126,18 @@ class VectorTrainer(BasicTrainer):
                     # if reload state
                     if merge_state:
                         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-                        self.state = self.merge_trees(v_states)
+                        self.state = merge_trees(v_states)
                         r_state = replicate(self.state)
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                    rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+                    _rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
-                    r_state, metrics = step_fn(r_state, batch, rngs)
+                    r_state, metrics = step_fn(r_state, batch, _rngs)
                     self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
 
                     r_state = replicate(self.state)
-                    rngs = replicate(raw_rngs)
+
                 else:
                     r_state, metrics = step_fn(r_state, batch, rngs)
                     self.state, metrics = unreplicate((r_state, metrics))  # un-rep
@@ -154,7 +154,7 @@ class VectorTrainer(BasicTrainer):
         # Merge state
         states = [s if s is not None else self.state for s in saved_states]
         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-        self.state = self.merge_trees(v_states)
+        self.state = merge_trees(v_states)
 
         callback.end_cb(self)
 
@@ -162,10 +162,15 @@ class VectorTrainer(BasicTrainer):
         logging.info(f"Vector Steps: {self.state.step}")
         return super(VectorTrainer, self).epoc_metrics()
 
-    @staticmethod
-    def merge_trees(ls):
-        tree = jax.tree_util.tree_structure(ls[0])
-        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
-        stacked = [jnp.stack(x) for x in flat_n]
-        return jax.tree_util.tree_unflatten(tree, stacked)
+
+def merge_trees(ls):
+    tree = jax.tree_util.tree_structure(ls[0])
+    flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+    stacked = _merge(flat)
+    return jax.tree_util.tree_unflatten(tree, stacked)
+
+@jax.jit
+def _merge(flat):
+    flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
+    stacked = [jnp.stack(x) for x in flat_n]
+    return stacked
