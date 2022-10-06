@@ -95,7 +95,7 @@ class VectorTrainer(BasicTrainer):
         to_populate = [True] * step_shape[0]
         saved_states = [None] * step_shape[0]
 
-        step = int(self.state.step[0])
+        step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
