@@ -71,9 +71,11 @@ class VectorTrainer(BasicTrainer):
         first, _ = next(data.take(1).as_numpy_iterator())
         return first
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback) -> None:
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
+                              training=True) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
+        :param training: 
         :param data: data to iterate over
         :param step_fn: the step function to call, must be
         :param hist:
@@ -105,7 +107,7 @@ class VectorTrainer(BasicTrainer):
                 # for now we are lazy and just save it all, don't have to worry about edge cases etc etc
                 toggled = np.logical_xor(mask, to_populate)
                 merge_state = False
-                if np.any(toggled):
+                if np.any(toggled) and training:
                     states = [s if s is not None else self.state for s in saved_states]
                     for i, cond in enumerate(toggled):
                         if cond:

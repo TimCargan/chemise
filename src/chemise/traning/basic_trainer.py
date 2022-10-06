@@ -239,9 +239,11 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback) -> None:
+    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
+                              training: bool = True) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
+        :param training: 
         :param data: data to iterate over
         :param step_fn: the step function to call, must be
         :param hist:
@@ -279,6 +281,7 @@ class BasicTrainer:
     def get_first_el(data: tfd.Dataset):
         first = next(data.take(1).as_numpy_iterator())
         return first
+
     """ 
     Standard Public interfaces, here is where the code that a standard user of the API
     They take standard arguments and abstract away all the JAX JIT / PMAP / Replication
