@@ -52,23 +52,21 @@ class Prefetch_dev(Thread):
                 if num_shards < 1:
                     return
                 # 1 shard or n shard of all the same size
-                if num_shards == 1 or (num_shards > 1 and get_batch_size(batch[-1], batch_dims=batch_dims) == batch_size):
+                if num_shards == 1 or ((bs := [get_batch_dims(el, batch_dims=batch_dims) for el in batch]).count(bs[0]) == num_shards):
                     queue.append(_prefetch(batch, devices[: num_shards]))
                     return
+                else:
+                    # End of batch, add un-even to queue
+                    batch_sizes = collections.defaultdict(list)
+                    for i, s in enumerate(bs):
+                        batch_sizes[s].append(i)
 
-                # End of batch, add un-even to queue
-                batch_sizes = {}
-                for i, s in enumerate([get_batch_dims(el, batch_dims=batch_dims) for el in batch]):
-                    cur = batch_sizes.get(s, [])
-                    cur.append(i)
-                    batch_sizes[s] = cur
+                    logging.debug(f"End of batch things, {batch_sizes}")
 
-                logging.debug(f"End of batch things, {batch_sizes}")
-
-                sizes = sorted(batch_sizes.keys(), reverse=True)
-                for bs in sizes:
-                    batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
-                    queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
+                    sizes = sorted(batch_sizes.keys(), reverse=True)
+                    for bs in sizes:
+                        batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
+                        queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
         enqueue(self.buffer_size - 1)  # Fill up the buffer, less the first already in.
         while queue:
