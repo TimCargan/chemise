@@ -112,6 +112,7 @@ class VectorTrainer(BasicTrainer):
                                 # Mask swapped from True to False so data is now bad for this run
                                 saved_states[i] = self.state
                                 to_populate[i] = False
+                                logging.info("Saving state %d", i)
                             if mask[i]:
                                 # Swap from False to True, so we need to merge the states back in
                                 # Merge state
@@ -122,16 +123,15 @@ class VectorTrainer(BasicTrainer):
                                 # Reset
                                 to_populate[i] = True
                                 saved_states[i] = None
+                                logging.info("Reloading state %d", i)
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
-                    logging.debug("Dev batch size doesnt match num devices")
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
                     r_state, metrics = step_fn(r_state, batch, rngs)
                     self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
 
-                    logging.debug("Re replicate")
                     r_state = replicate(self.state)
                     rngs = replicate(raw_rngs)
                 else:
@@ -143,8 +143,8 @@ class VectorTrainer(BasicTrainer):
                     nan_mask = np.array([1.0 if m else np.NAN for m in mask])
                     metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
 
-                logging.debug(mask)
-                logging.debug(metrics["loss"])
+                logging.info(mask)
+                logging.info(metrics["loss"])
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
