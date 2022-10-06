@@ -64,7 +64,7 @@ class Prefetch_dev(Thread):
                 else:
                     # End of batch just use one GPU for now, add un-even to queue
                     for el in batch:
-                        queue.append(_prefetch(el, devices[: 1]))
+                        queue.append(_prefetch([el], devices[: 1]))
                     # # End of batch, add un-even to queue
                     # batch_sizes = collections.defaultdict(list)
                     # for i, s in enumerate(bs):
