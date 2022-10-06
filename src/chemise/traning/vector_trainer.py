@@ -106,6 +106,7 @@ class VectorTrainer(BasicTrainer):
                 toggled = np.logical_xor(mask, to_populate)
                 merge_state = False
                 if np.any(toggled):
+                    states = [s if s is not None else self.state for s in saved_states]
                     for i, cond in enumerate(toggled):
                         if cond:
                             if to_populate[i]:
@@ -115,15 +116,16 @@ class VectorTrainer(BasicTrainer):
                                 logging.info("Saving state %d", i)
                             if mask[i]:
                                 # Swap from False to True, so we need to merge the states back in
-                                # Merge state
-                                states = [s if s is not None else self.state for s in saved_states]
-                                v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-                                self.state = self.merge_trees(v_states)
-                                r_state = replicate(self.state)
-                                # Reset
+                                merge_state = True
                                 to_populate[i] = True
                                 saved_states[i] = None
                                 logging.info("Reloading state %d", i)
+
+                    # if reload state
+                    if merge_state:
+                        v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
+                        self.state = self.merge_trees(v_states)
+                        r_state = replicate(self.state)
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
