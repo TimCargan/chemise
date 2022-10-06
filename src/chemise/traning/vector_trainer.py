@@ -143,8 +143,6 @@ class VectorTrainer(BasicTrainer):
                     nan_mask = np.array([1.0 if m else np.NAN for m in mask])
                     metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
 
-                logging.info(mask)
-                logging.info(metrics["loss"])
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
