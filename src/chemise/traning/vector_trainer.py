@@ -86,6 +86,7 @@ class VectorTrainer(BasicTrainer):
         d_iter = data.as_numpy_iterator()
         d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True, batch_dims=2)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
+        last_state = self.state
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
         rngs = replicate(raw_rngs)
@@ -108,23 +109,25 @@ class VectorTrainer(BasicTrainer):
                 toggled = np.logical_xor(mask, to_populate)
                 merge_state = False
                 if np.any(toggled) and training:
-                    states = [s if s is not None else self.state for s in saved_states]
+                    _states = [None] * step_shape[0]
                     for i, cond in enumerate(toggled):
                         if cond:
                             if to_populate[i]:
                                 # Mask swapped from True to False so data is now bad for this run
-                                saved_states[i] = self.state
+                                saved_states[i] = last_state
                                 to_populate[i] = False
-                                logging.info("Saving state %d", i)
+                                logging.debug("Saving state %d", i)
                             if mask[i]:
                                 # Swap from False to True, so we need to merge the states back in
                                 merge_state = True
                                 to_populate[i] = True
+                                _states[i] = saved_states[i]
                                 saved_states[i] = None
-                                logging.info("Reloading state %d", i)
 
                     # if reload state
                     if merge_state:
+                        logging.debug(f"Reloading using mask: {mask}")
+                        states = [s if s is not None else last_state for s in _states]
                         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
                         self.state = merge_trees(v_states)
                         r_state = replicate(self.state)
@@ -149,6 +152,7 @@ class VectorTrainer(BasicTrainer):
 
                 hist.append(metrics)
                 step += 1
+                last_state = self.state
                 callback.step_end_cb(self)
 
         # Merge state
