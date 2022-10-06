@@ -55,7 +55,7 @@ class Prefetch_dev(Thread):
                 # 1 shard or n shard of all the same size
                 mask_match = True
                 if with_meta:
-                    masks = [el[1] for el in batch]
+                    masks = [list(el[1]) for el in batch]
                     mask_match = masks.count(masks[0]) == len(masks)
 
                 if num_shards == 1 or (mask_match and (bs := [get_batch_dims(el, batch_dims=batch_dims) for el in batch]).count(bs[0]) == num_shards):
