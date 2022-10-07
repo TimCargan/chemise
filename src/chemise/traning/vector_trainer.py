@@ -80,6 +80,14 @@ class VectorTrainer(BasicTrainer):
         results = lax.cond(mask, lambda on: on[0], lambda on: on[1], old_new)
         return results
 
+    @partial(jax.jit, static_argnums=(0,2))
+    def _slice(self, r_f_state, s):
+        return [x[:s] for x in r_f_state]
+    def slice(self, r_state, s):
+        leaves, treedef = jax.tree_util.tree_flatten(r_state)
+        leaves = self._slice(leaves, s)
+        return treedef.unflatten(leaves)
+
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
                               training=True) -> None:
         """
@@ -144,16 +152,18 @@ class VectorTrainer(BasicTrainer):
                 #         self.state = merge_trees(v_states)
                 #         r_state = replicate(self.state)
 
-                if (s := get_batch_size(batch)) < dev_batch_size:
-                    _r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                    _rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+                # if (s := get_batch_size(batch)) < dev_batch_size:
+                s = get_batch_size(batch)
+                _r_state = self.slice(r_state, s)
+                _rngs = self.slice(rngs, s)  # jax.tree_util.tree_map(lambda x: x[:s], rngs)
+                new_r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
-                    new_r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+                if s < dev_batch_size:
                     _state = unreplicate(new_r_state)  # un-replicate and re-broadcast for state
                     new_r_state = replicate(_state)
 
-                else:
-                    new_r_state, r_metrics = step_fn(r_state, batch, rngs)
+                # else:
+                #     new_r_state, r_metrics = step_fn(r_state, batch, rngs)
 
                 r_state = self.jax_if_merge(mask, new_r_state, r_state)
                 # un-replicate so callbacks and metrics work
