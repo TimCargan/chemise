@@ -32,8 +32,9 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
 
     # @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 1, 1, None, 0), out_axes=(1,1))
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask: bool) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 0, None))
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -41,12 +42,10 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        new_state, metrics = super(VectorTrainer, self).p_train_step(state, batch, rngs)
-        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
+        new_state, metrics = self._p_train_step(state, batch, rngs)
         return new_state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None))
+
     def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
@@ -73,6 +72,13 @@ class VectorTrainer(BasicTrainer):
     def get_first_el(data: tfd.Dataset):
         first, _ = next(data.take(1).as_numpy_iterator())
         return first
+
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, None, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 0, 0))
+    def jax_if_merge(self, mask, old, new):
+        old_new = (old, new)
+        results = lax.cond(mask, lambda on: on[0], lambda on: on[1], old_new)
+        return results
 
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
                               training=True) -> None:
@@ -142,17 +148,19 @@ class VectorTrainer(BasicTrainer):
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     _rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
-                    r_state, metrics = step_fn(r_state, batch, _rngs, np_mask)
-                    self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
-
-                    r_state = replicate(self.state)
+                    new_r_state, r_metrics = step_fn(r_state, batch, _rngs)
+                    _state = unreplicate(new_r_state)  # un-replicate and re-broadcast for state
+                    new_r_state = replicate(_state)
 
                 else:
-                    r_state, metrics = step_fn(r_state, batch, rngs, np_mask)
-                    self.state, metrics = unreplicate((r_state, metrics))  # un-rep
+                    new_r_state, r_metrics = step_fn(r_state, batch, rngs)
+
+                r_state = self.jax_if_merge(mask, new_r_state, r_state)
+                # un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, r_metrics))
 
                 # Mask out bad results with Nans
-                if not np.all(mask):
+                if np.all(mask):
                     nan_mask = np.array([1.0 if m else np.NAN for m in mask])
                     metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
 
