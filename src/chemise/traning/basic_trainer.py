@@ -12,7 +12,7 @@ import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
-from jaxtyping import Num, Array
+from jaxtyping import Num, Array, Bool
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -156,7 +156,7 @@ class BasicTrainer:
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1, mask: Bool[Array, "..."] = False):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
@@ -167,7 +167,7 @@ class BasicTrainer:
         y = batch[1]
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
-        p_loss = self.loss_fn(y, y_pred)
+        p_loss = self.loss_fn(y, y_pred, mask)
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
