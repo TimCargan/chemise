@@ -4,12 +4,11 @@ import queue
 from threading import Thread
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 from absl import logging
 
 
-class Prefetch_dev(Thread):
+class Prefetch_dev:
     """
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
@@ -28,12 +27,6 @@ class Prefetch_dev(Thread):
         devices = jax.local_devices()
         dev_count = len(devices)
         def _prefetch(data, devs):
-            if with_meta:
-                batch = [d[0] for d in data]
-                meta = data[0][1:]
-                prefetched_data = jax.device_put_sharded(batch, devs)
-                return (prefetched_data, *meta)
-
             return jax.device_put_sharded(data, devs)
 
         first = next(self.data)
@@ -54,10 +47,6 @@ class Prefetch_dev(Thread):
 
                 # 1 shard or n shard of all the same size
                 mask_match = True
-                if with_meta:
-                    masks = [list(el[1]) for el in batch]
-                    mask_match = masks.count(masks[0]) == len(masks)
-
                 if num_shards == 1 or (mask_match and (bs := [get_batch_dims(el, batch_dims=batch_dims) for el in batch]).count(bs[0]) == num_shards):
                     queue.append(_prefetch(batch, devices[: num_shards]))
                     return
@@ -81,60 +70,6 @@ class Prefetch_dev(Thread):
         while queue:
             yield queue.popleft()
             enqueue(1)
-
-    def iter_old(self):
-        @jax.jit
-        def _stack(flat):
-            flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
-            stacked = [jnp.stack(x) for x in flat_n]
-            return stacked
-        def _prefetch_s(data, devs):
-            tree = jax.tree_util.tree_flatten(data[0])[1]
-            flat = [jax.tree_util.tree_flatten(d)[0] for d in data]
-            stacked = _stack(flat)
-            uf = jax.tree_util.tree_unflatten(tree, stacked)
-            return uf
-
-
-        devices = jax.local_devices()
-        first = next(self.data)
-        batch_size = get_batch_size(first)
-
-        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %d, ...]", len(devices),
-                      len(devices), batch_size)
-
-        shard_data = [first]
-        tail = []
-        for data in self.data:
-            if len(shard_data) == len(devices):
-                res = _prefetch(shard_data, devices)
-                yield res
-                shard_data = []
-            if get_batch_size(data) == batch_size:
-                shard_data.append(data)
-            else:
-                tail.append(data)
-
-        if shard_data:
-            logging.info("Number of batches % devices != 0, added a step less that total devices")
-            yield _prefetch(shard_data, devices[:len(shard_data)])
-
-        if tail:
-            logging.info("Small final batch added")
-            tail_len = len(tail)
-            assert tail_len <= len(devices), "More than device number of tails"
-            yield _prefetch(tail, devices[:tail_len])
-
-        # raise StopIteration
-
-    def __iter__(self):
-        return self
-
-    def __next(self):
-        if data := self.q.get():
-            self.q.task_done()
-            return data
-        raise StopIteration
 
 
 class Prefetch(Thread):
