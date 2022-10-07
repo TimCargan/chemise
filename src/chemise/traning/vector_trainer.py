@@ -10,6 +10,7 @@ import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
+from jax import lax
 from jaxtyping import Num, Array
 from tensorflow import data as tfd  # Only for typing
 
@@ -30,9 +31,9 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 @dataclass(unsafe_hash=True)
 class VectorTrainer(BasicTrainer):
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None))
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    # @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 1, 1, None, 0), out_axes=(1,1))
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask: bool) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -40,7 +41,9 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        return self._p_train_step(state, batch, rngs)
+        new_state, metrics = super(VectorTrainer, self).p_train_step(state, batch, rngs)
+        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
+        return new_state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 0, None))
@@ -104,45 +107,48 @@ class VectorTrainer(BasicTrainer):
                     break
 
                 batch, mask = batch
+                np_mask = np.array(mask)
+                # np_mask = np_mask.reshape((-1,1))
                 # If a mask bit has flipped, save the current state for that vector dim,
                 # for now we are lazy and just save it all, don't have to worry about edge cases etc etc
                 toggled = np.logical_xor(mask, to_populate)
-                merge_state = False
-                if np.any(toggled) and training:
-                    _states = [None] * step_shape[0]
-                    for i, cond in enumerate(toggled):
-                        if cond:
-                            if to_populate[i]:
-                                # Mask swapped from True to False so data is now bad for this run
-                                saved_states[i] = last_state
-                                to_populate[i] = False
-                                logging.debug("Saving state %d", i)
-                            if mask[i]:
-                                # Swap from False to True, so we need to merge the states back in
-                                merge_state = True
-                                to_populate[i] = True
-                                _states[i] = saved_states[i]
-                                saved_states[i] = None
 
-                    # if reload state
-                    if merge_state:
-                        logging.debug(f"Reloading using mask: {mask}")
-                        states = [s if s is not None else last_state for s in _states]
-                        v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-                        self.state = merge_trees(v_states)
-                        r_state = replicate(self.state)
+                # if np.any(toggled) and training:
+                #     merge_state = False
+                #     _states = [None] * step_shape[0]
+                #     for i, cond in enumerate(toggled):
+                #         if cond:
+                #             if to_populate[i]:
+                #                 # Mask swapped from True to False so data is now bad for this run
+                #                 saved_states[i] = last_state
+                #                 to_populate[i] = False
+                #                 logging.debug("Saving state %d", i)
+                #             if mask[i]:
+                #                 # Swap from False to True, so we need to merge the states back in
+                #                 merge_state = True
+                #                 to_populate[i] = True
+                #                 _states[i] = saved_states[i]
+                #                 saved_states[i] = None
+                #
+                #     # if reload state
+                #     if merge_state:
+                #         logging.debug(f"Reloading using mask: {mask}")
+                #         states = [s if s is not None else last_state for s in _states]
+                #         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
+                #         self.state = merge_trees(v_states)
+                #         r_state = replicate(self.state)
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
                     r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     _rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
-                    r_state, metrics = step_fn(r_state, batch, _rngs)
+                    r_state, metrics = step_fn(r_state, batch, _rngs, np_mask)
                     self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
 
                     r_state = replicate(self.state)
 
                 else:
-                    r_state, metrics = step_fn(r_state, batch, rngs)
+                    r_state, metrics = step_fn(r_state, batch, rngs, np_mask)
                     self.state, metrics = unreplicate((r_state, metrics))  # un-rep
 
                 # Mask out bad results with Nans
@@ -152,7 +158,6 @@ class VectorTrainer(BasicTrainer):
 
                 hist.append(metrics)
                 step += 1
-                last_state = self.state
                 callback.step_end_cb(self)
 
         # Merge state
