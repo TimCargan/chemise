@@ -67,7 +67,7 @@ def _sanity_error(data: Features) -> (bool, dict):
     :param data:
     :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
     """
-    feats = {f"{k}": jnp.all(v == v[0], axis=None) for k, v in data.items()}
+    feats = {f"{k}": jnp.all(v == jnp.reshape(v, (-1))[0], axis=None) for k, v in data.items()}
     is_good = reduce(operator.or_, feats.values(), False)
     return is_good, feats
 
@@ -182,7 +182,7 @@ class BasicTrainer:
         """
         return self._p_train_step(state, batch, rngs)
 
-    def _p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    def _p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask) -> State_Result:
         """
         Unwrapped train step, helpful for inheritance where they want to reorder / not jit or pmap
         :param state:
@@ -197,7 +197,7 @@ class BasicTrainer:
         rngs = self._rngs_mix(rngs, state.step)
 
         step = jax.value_and_grad(self._step, has_aux=True)
-        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
+        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH, mask)
         grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
@@ -239,6 +239,15 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
+    @partial(jax.jit, static_argnums=(0,2))
+    def _slice(self, r_f_state, s):
+        return [x[:s] for x in r_f_state]
+
+    def slice(self, r_state, s):
+        leaves, treedef = jax.tree_util.tree_flatten(r_state)
+        leaves = self._slice(leaves, s)
+        return treedef.unflatten(leaves)
+
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
                               training: bool = True) -> None:
         """
@@ -258,19 +267,31 @@ class BasicTrainer:
         rngs = replicate(self._make_rngs())
         dev_batch_size = get_batch_size(r_state)
 
-        step = int(self.state.step)
+        step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
 
-                if (s := get_batch_size(batch)) < dev_batch_size:
-                    r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                    rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+                batch, mask = batch
+                np_mask = np.array(mask)
 
-                r_state, metrics = step_fn(r_state, batch, rngs)
-                self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
+                # Slice state and RNGs as needed if dev_batch is less than number of devs
+                s = get_batch_size(batch)
+                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+
+                # Run step
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
+
+                # Un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, r_metrics))
+
+                # re-broadcast state if needed
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
+
+                # Update metrics
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
