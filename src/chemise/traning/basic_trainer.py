@@ -12,7 +12,7 @@ import numpy as np
 from absl import logging, flags
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
-from jaxtyping import Num, Array
+from jaxtyping import Num, Array, Bool
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
@@ -32,7 +32,7 @@ FLAGS = flags.FLAGS
 Result = dict[str, Num[Array, ""]]
 State_Result = Tuple[TrainState, Result]
 Features = dict[str, Num[Array, "..."]]
-Batch = Tuple[Features, Features]
+Batch = Tuple[Features, Features] | Tuple[Features, Features, Bool[Array, "..."]]
 Rand_Dict = dict[str, jax.random.PRNGKeyArray]
 P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
@@ -67,7 +67,7 @@ def _sanity_error(data: Features) -> (bool, dict):
     :param data:
     :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
     """
-    feats = {f"{k}": jnp.all(v == v[0], axis=None) for k, v in data.items()}
+    feats = {f"{k}": jnp.all(v == jnp.reshape(v, (-1))[0], axis=None) for k, v in data.items()}
     is_good = reduce(operator.or_, feats.values(), False)
     return is_good, feats
 
@@ -117,6 +117,8 @@ class BasicTrainer:
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
 
+    batch_dims: int = 1
+
     rng_keys: List[str] = field(default_factory=list, compare=False)
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
@@ -165,9 +167,11 @@ class BasicTrainer:
             """
         x = batch[0]
         y = batch[1]
+        mask = s[0] if (s := batch[2:3]) else True
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)
+        p_loss = jnp.where(mask, p_loss, 0.0) # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
@@ -233,11 +237,21 @@ class BasicTrainer:
     def _p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         x = batch[0]
         y = batch[1]
+
         gbs = get_batch_size(batch, 2)
         loss, y_pred = self._step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
+
+    @partial(jax.jit, static_argnums=(0, 2))
+    def _slice(self, r_f_state, s):
+        return [x[:s] for x in r_f_state]
+
+    def slice(self, r_state, s):
+        leaves, treedef = jax.tree_util.tree_flatten(r_state)
+        leaves = self._slice(leaves, s)
+        return treedef.unflatten(leaves)
 
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
                               training: bool = True) -> None:
@@ -252,25 +266,34 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
         dev_batch_size = get_batch_size(r_state)
 
-        step = int(self.state.step)
+        step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
             with jax.profiler.StepTraceAnnotation("train", step_num=step):
                 if not (batch := next(d_iter, None)):
                     break
 
-                if (s := get_batch_size(batch)) < dev_batch_size:
-                    r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                    rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
+                # Slice state and RNGs as needed if dev_batch is less than number of devs
+                s = get_batch_size(batch)
+                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-                r_state, metrics = step_fn(r_state, batch, rngs)
-                self.state, metrics = unreplicate((r_state, metrics))  # un-replicate so callbacks and metrics work
+                # Run step
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+
+                # Un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, r_metrics))
+
+                # re-broadcast state if needed
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
+
+                # Update metrics
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
@@ -293,7 +316,7 @@ class BasicTrainer:
         :param batch:
         :return: [predictions, loss, metrics]
         """
-        x, y = batch
+        x, y = batch[:2]
         rngs = self._make_rngs()
         y_pred = self.state.apply_fn({'params': self.state.params}, batch[0], rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)

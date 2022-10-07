@@ -7,16 +7,14 @@ from typing import Callable, Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
+import tensorflow as tf
 from absl import logging, flags
-from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jax import lax
 from jaxtyping import Num, Array
 from tensorflow import data as tfd  # Only for typing
 
-from chemise.callbacks.abc_callback import StepCallback
 from chemise.traning import BasicTrainer
-from chemise.traning.prefetch import get_batch_size, Prefetch_dev
 
 FLAGS = flags.FLAGS
 
@@ -30,11 +28,11 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
 @dataclass(unsafe_hash=True)
 class VectorTrainer(BasicTrainer):
+    batch_dims: int = 2
 
-    # @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None, 0))
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask: bool) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None))
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -42,11 +40,28 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        new_state, metrics = self._p_train_step(state, batch, rngs)
-        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
-        return new_state, metrics
+        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
+        state, metrics = lax.cond(mask,
+                                  lambda s: self._p_train_step(s, batch, rngs),
+                                  lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
+                                                     **self.metrics_fn(batch[1], np.NAN)))
+                                  , state)
 
+        #
+        # new_state, metrics = self._p_train_step(state, batch, rngs)
+        # mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        # new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
+        #
+        # @jax.jit
+        # def nan_array(x):
+        #     return x * np.NAN
+        # metrics = lax.cond(mask, lambda x: x, lambda x: jax.tree_util.tree_map(nan_array, x), metrics)
+
+        return state, metrics
+
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
@@ -57,8 +72,8 @@ class VectorTrainer(BasicTrainer):
         """
         return self._p_apply_step(state, batch, rngs)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
@@ -67,137 +82,81 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-        return self._p_test_step(state, batch, rngs)
 
-    @staticmethod
-    def get_first_el(data: tfd.Dataset):
-        first, _ = next(data.take(1).as_numpy_iterator())
-        return first
+        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, None, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, 0))
-    def jax_if_merge(self, mask, old, new):
-        old_new = (old, new)
-        results = lax.cond(mask, lambda on: on[0], lambda on: on[1], old_new)
-        return results
-
-    @partial(jax.jit, static_argnums=(0,2))
-    def _slice(self, r_f_state, s):
-        return [x[:s] for x in r_f_state]
-    def slice(self, r_state, s):
-        leaves, treedef = jax.tree_util.tree_flatten(r_state)
-        leaves = self._slice(leaves, s)
-        return treedef.unflatten(leaves)
-
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
-                              training=True) -> None:
-        """
-        A standard step call, helpful to reduce code in the main train loops
-        :param training: 
-        :param data: data to iterate over
-        :param step_fn: the step function to call, must be
-        :param hist:
-        :param callback: StepCallback object
-        :return:
-        """
-        callback.start_cb(self)
-        d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True, batch_dims=2)
-        # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
-        last_state = self.state
-        r_state = replicate(self.state)
-        raw_rngs = self._make_rngs()
-        rngs = replicate(raw_rngs)
-        dev_batch_size = get_batch_size(r_state)
-
-        step_shape = np.shape(self.state.step)
-        to_populate = [True] * step_shape[0]
-        saved_states = [None] * step_shape[0]
-
-        step = int(np.max(self.state.step))
-        while True:
-            callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_num=step):
-                if not (batch := next(d_iter, None)):
-                    break
-
-                batch, mask = batch
-                np_mask = np.array(mask)
-                # np_mask = np_mask.reshape((-1,1))
-                # If a mask bit has flipped, save the current state for that vector dim,
-                # for now we are lazy and just save it all, don't have to worry about edge cases etc etc
-                # toggled = np.logical_xor(mask, to_populate)
-                # if np.any(toggled) and training:
-                #     merge_state = False
-                #     _states = [None] * step_shape[0]
-                #     for i, cond in enumerate(toggled):
-                #         if cond:
-                #             if to_populate[i]:
-                #                 # Mask swapped from True to False so data is now bad for this run
-                #                 saved_states[i] = last_state
-                #                 to_populate[i] = False
-                #                 logging.debug("Saving state %d", i)
-                #             if mask[i]:
-                #                 # Swap from False to True, so we need to merge the states back in
-                #                 merge_state = True
-                #                 to_populate[i] = True
-                #                 _states[i] = saved_states[i]
-                #                 saved_states[i] = None
-                #
-                #     # if reload state
-                #     if merge_state:
-                #         logging.debug(f"Reloading using mask: {mask}")
-                #         states = [s if s is not None else last_state for s in _states]
-                #         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-                #         self.state = merge_trees(v_states)
-                #         r_state = replicate(self.state)
-
-                # if (s := get_batch_size(batch)) < dev_batch_size:
-                s = get_batch_size(batch)
-                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
-                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
-
-                new_r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
-
-                if s < dev_batch_size:
-                    # un-replicate and re-broadcast for state
-                    _state = unreplicate(new_r_state)
-                    new_r_state = replicate(_state)
-
-                r_state = new_r_state # self.jax_if_merge(mask, new_r_state, r_state)
-
-                # un-replicate so callbacks and metrics work
-                self.state, metrics = unreplicate((r_state, r_metrics))
-
-                # Mask out bad results with Nans
-                if not np.all(mask):
-                    nan_mask = np.array([1.0 if m else np.NAN for m in mask])
-                    metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
-
-                hist.append(metrics)
-                step += 1
-                callback.step_end_cb(self)
-
-        # Merge state
-        # states = [s if s is not None else self.state for s in saved_states]
-        # v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-        # self.state = merge_trees(v_states)
-        logging.info("Internal step count: %d", step)
-        callback.end_cb(self)
+        state, metrics = lax.cond(mask,
+                                  lambda s: self._p_test_step(s, batch, rngs),
+                                  lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
+                                                     **self.metrics_fn(batch[1], np.NAN)))
+                                  , state)
+        return state, metrics
 
     def epoc_metrics(self):
         logging.info(f"Vector Steps: {self.state.step}")
         return super(VectorTrainer, self).epoc_metrics()
 
+def stack_vec_datasets(ds:list[tfd.Dataset], vec_axes:int=0, add_mask:bool=False):
+    lens = [d.cardinality() for d in ds]
+    max_len = max(lens)
+    padded_ds = []
+    for d in ds:
+        zero = jax.tree_util.tree_map(lambda x: np.zeros(shape=x.shape, dtype=x.dtype.as_numpy_dtype), d.element_spec)
+        pad = tfd.Dataset.from_tensors(zero)
+        pad = pad.map(lambda *x: (*x, [False])) if add_mask else pad
+        pad = pad.cache()
 
-def merge_trees(ls):
-    tree = jax.tree_util.tree_structure(ls[0])
-    flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-    stacked = _merge(flat)
-    return jax.tree_util.tree_unflatten(tree, stacked)
+        l = d.cardinality()
+        d = d.map(lambda *x: (*x, [True])) if add_mask else d
+        len_diff = max_len - l
+        if len_diff > 0:
+            d = d.concatenate(pad.repeat(len_diff))
+        padded_ds.append(d)
 
-@jax.jit
-def _merge(flat):
-    flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
-    stacked = [jnp.stack(x) for x in flat_n]
+    def stack_els(*ls):
+        tree = jax.tree_util.tree_structure(ls[0])
+        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
+        stacked = [tf.concat(x, axis=vec_axes) for x in flat_n]
+        return jax.tree_util.tree_unflatten(tree, stacked)
+
+    zipped = tfd.Dataset.zip((*padded_ds,))
+    stacked = zipped.map(stack_els, num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
+    return stacked
+
+def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
+    """
+    Pack a list of datasets into a single dataset with
+    :param ds:
+    :return:
+    """
+    d = ds[0]
+    zero = jax.tree_util.tree_map(lambda x: np.zeros(shape=x.shape, dtype=x.dtype.as_numpy_dtype), d.element_spec)
+    pad = tfd.Dataset.from_tensors((*zero, [False]))
+    pad = pad.cache()
+
+    lens = [d.cardinality() for d in ds]
+    max_len = max(lens)
+    if pad_to_batch:
+        r = max_len % pad_to_batch
+        max_len = max_len + (pad_to_batch - r)
+
+    padded_ds = []
+    for d in ds:
+        l = d.cardinality()
+        d = d.map(lambda *x: (*x, [True]), num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
+        len_diff = max_len - l
+        if len_diff > 0:
+            d = d.concatenate(pad.repeat(len_diff))
+        padded_ds.append(d)
+
+    def stack_els(*ls):
+        tree = jax.tree_util.tree_structure(ls[0])
+        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
+        stacked = [tf.stack(x) for x in flat_n]
+        return jax.tree_util.tree_unflatten(tree, stacked)
+
+    zipped = tfd.Dataset.zip((*padded_ds,))
+    stacked = zipped.map(stack_els, num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
     return stacked
