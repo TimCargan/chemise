@@ -32,9 +32,9 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
 
     # @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None))
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 0, None, 0))
+    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask: bool) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -43,6 +43,7 @@ class VectorTrainer(BasicTrainer):
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
         new_state, metrics = self._p_train_step(state, batch, rngs)
+        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
         return new_state, metrics
 
 
@@ -125,8 +126,7 @@ class VectorTrainer(BasicTrainer):
                 # np_mask = np_mask.reshape((-1,1))
                 # If a mask bit has flipped, save the current state for that vector dim,
                 # for now we are lazy and just save it all, don't have to worry about edge cases etc etc
-                toggled = np.logical_xor(mask, to_populate)
-
+                # toggled = np.logical_xor(mask, to_populate)
                 # if np.any(toggled) and training:
                 #     merge_state = False
                 #     _states = [None] * step_shape[0]
@@ -154,23 +154,23 @@ class VectorTrainer(BasicTrainer):
 
                 # if (s := get_batch_size(batch)) < dev_batch_size:
                 s = get_batch_size(batch)
-                _r_state = self.slice(r_state, s)
-                _rngs = self.slice(rngs, s)  # jax.tree_util.tree_map(lambda x: x[:s], rngs)
-                new_r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+
+                new_r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
 
                 if s < dev_batch_size:
-                    _state = unreplicate(new_r_state)  # un-replicate and re-broadcast for state
+                    # un-replicate and re-broadcast for state
+                    _state = unreplicate(new_r_state)
                     new_r_state = replicate(_state)
 
-                # else:
-                #     new_r_state, r_metrics = step_fn(r_state, batch, rngs)
+                r_state = new_r_state # self.jax_if_merge(mask, new_r_state, r_state)
 
-                r_state = self.jax_if_merge(mask, new_r_state, r_state)
                 # un-replicate so callbacks and metrics work
                 self.state, metrics = unreplicate((r_state, r_metrics))
 
                 # Mask out bad results with Nans
-                if np.all(mask):
+                if not np.all(mask):
                     nan_mask = np.array([1.0 if m else np.NAN for m in mask])
                     metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
 
@@ -179,10 +179,10 @@ class VectorTrainer(BasicTrainer):
                 callback.step_end_cb(self)
 
         # Merge state
-        states = [s if s is not None else self.state for s in saved_states]
-        v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-        self.state = merge_trees(v_states)
-
+        # states = [s if s is not None else self.state for s in saved_states]
+        # v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
+        # self.state = merge_trees(v_states)
+        logging.info("Internal step count: %d", step)
         callback.end_cb(self)
 
     def epoc_metrics(self):
