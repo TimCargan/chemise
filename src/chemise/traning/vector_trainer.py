@@ -32,8 +32,8 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
 
     # @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 0, None, 0))
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None, 1))
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask: bool) -> State_Result:
         """
         Train for a single step.
@@ -42,8 +42,8 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        new_state, metrics = self._p_train_step(state, batch, rngs)
-        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
+        new_state, metrics = self._p_train_step(state, batch, rngs, mask)
+        new_state = lax.cond(jnp.any(mask), lambda on: on[0], lambda on: on[1], (new_state, state))
         return new_state, metrics
 
 
@@ -81,14 +81,6 @@ class VectorTrainer(BasicTrainer):
         results = lax.cond(mask, lambda on: on[0], lambda on: on[1], old_new)
         return results
 
-    @partial(jax.jit, static_argnums=(0,2))
-    def _slice(self, r_f_state, s):
-        return [x[:s] for x in r_f_state]
-    def slice(self, r_state, s):
-        leaves, treedef = jax.tree_util.tree_flatten(r_state)
-        leaves = self._slice(leaves, s)
-        return treedef.unflatten(leaves)
-
     def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
                               training=True) -> None:
         """
@@ -104,15 +96,10 @@ class VectorTrainer(BasicTrainer):
         d_iter = data.as_numpy_iterator()
         d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(with_meta=True, batch_dims=2)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
-        last_state = self.state
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
         rngs = replicate(raw_rngs)
         dev_batch_size = get_batch_size(r_state)
-
-        step_shape = np.shape(self.state.step)
-        to_populate = [True] * step_shape[0]
-        saved_states = [None] * step_shape[0]
 
         step = int(np.max(self.state.step))
         while True:
@@ -123,65 +110,36 @@ class VectorTrainer(BasicTrainer):
 
                 batch, mask = batch
                 np_mask = np.array(mask)
-                # np_mask = np_mask.reshape((-1,1))
-                # If a mask bit has flipped, save the current state for that vector dim,
-                # for now we are lazy and just save it all, don't have to worry about edge cases etc etc
-                # toggled = np.logical_xor(mask, to_populate)
-                # if np.any(toggled) and training:
-                #     merge_state = False
-                #     _states = [None] * step_shape[0]
-                #     for i, cond in enumerate(toggled):
-                #         if cond:
-                #             if to_populate[i]:
-                #                 # Mask swapped from True to False so data is now bad for this run
-                #                 saved_states[i] = last_state
-                #                 to_populate[i] = False
-                #                 logging.debug("Saving state %d", i)
-                #             if mask[i]:
-                #                 # Swap from False to True, so we need to merge the states back in
-                #                 merge_state = True
-                #                 to_populate[i] = True
-                #                 _states[i] = saved_states[i]
-                #                 saved_states[i] = None
-                #
-                #     # if reload state
-                #     if merge_state:
-                #         logging.debug(f"Reloading using mask: {mask}")
-                #         states = [s if s is not None else last_state for s in _states]
-                #         v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-                #         self.state = merge_trees(v_states)
-                #         r_state = replicate(self.state)
 
-                # if (s := get_batch_size(batch)) < dev_batch_size:
                 s = get_batch_size(batch)
                 _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
                 _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-                new_r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
-
-                if s < dev_batch_size:
-                    # un-replicate and re-broadcast for state
-                    _state = unreplicate(new_r_state)
-                    new_r_state = replicate(_state)
-
-                r_state = new_r_state # self.jax_if_merge(mask, new_r_state, r_state)
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
 
                 # un-replicate so callbacks and metrics work
                 self.state, metrics = unreplicate((r_state, r_metrics))
 
+                # un-replicate and re-broadcast for state
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
+
                 # Mask out bad results with Nans
+                # model_ok_state = jax.tree_util.tree_map(lambda x: x[0, 0], r_state)
+                # bad_batch = jax.tree_util.tree_map(lambda x: x[0, :, 2], batch)
+                # output = self._p_train_step(model_ok_state, bad_batch, {'lstm_cell': jax.random.PRNGKey(0)},
+                #                             mask[0, :, 2])
                 if not np.all(mask):
-                    nan_mask = np.array([1.0 if m else np.NAN for m in mask])
-                    metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
+                    # model_ok_state = jax.tree_util.tree_map(lambda x: x[0, 0], r_state)
+                    # bad_batch = jax.tree_util.tree_map(lambda x: x[0, :, 2], batch)
+                    # output = self._p_dtrain_step(model_ok_state, bad_batch, {'lstm_cell': jax.random.PRNGKey(0)}, mask[0, :, 2])
+                    pass
+                #     nan_mask = np.array([1.0 if m else np.NAN for m in mask])
+                #     metrics = jax.tree_util.tree_map(lambda x: x * nan_mask, metrics)
 
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
 
-        # Merge state
-        # states = [s if s is not None else self.state for s in saved_states]
-        # v_states = [jax.tree_util.tree_map(lambda x: x[i], v) for i, v in enumerate(states)]
-        # self.state = merge_trees(v_states)
         logging.info("Internal step count: %d", step)
         callback.end_cb(self)
 
