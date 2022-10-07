@@ -145,10 +145,10 @@ class VectorTrainer(BasicTrainer):
                 #         r_state = replicate(self.state)
 
                 if (s := get_batch_size(batch)) < dev_batch_size:
-                    r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
+                    _r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                     _rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
 
-                    new_r_state, r_metrics = step_fn(r_state, batch, _rngs)
+                    new_r_state, r_metrics = step_fn(_r_state, batch, _rngs)
                     _state = unreplicate(new_r_state)  # un-replicate and re-broadcast for state
                     new_r_state = replicate(_state)
 
