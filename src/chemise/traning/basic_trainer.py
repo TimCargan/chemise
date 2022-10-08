@@ -112,7 +112,7 @@ class BasicTrainer:
     """
     state: TrainState = field(compare=False)
     loss_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Num[Array, "..."]]
-    metrics_fn: Callable[[Num[Array, "..."], Num[Array, "..."]], Result] = no_metrics_fn
+    metrics_fn: Callable[[Num[Array, "..."] | dict[str, Num[Array, "..."]], Num[Array, "..."]], Result] = no_metrics_fn
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
