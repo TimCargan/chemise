@@ -40,16 +40,25 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        new_state, metrics = self._p_train_step(state, batch, rngs)
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
-        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
 
-        @jax.jit
-        def nan_array(x):
-            return x * np.NAN
-        metrics = lax.cond(mask, lambda x: x, lambda x: jax.tree_util.tree_map(nan_array, x), metrics)
+        state, metrics = lax.cond(mask,
+                                  lambda s: self._p_train_step(s, batch, rngs),
+                                  lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
+                                                     **self.metrics_fn(batch[1], np.NAN)))
+                                  , state)
 
-        return new_state, metrics
+        #
+        # new_state, metrics = self._p_train_step(state, batch, rngs)
+        # mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        # new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
+        #
+        # @jax.jit
+        # def nan_array(x):
+        #     return x * np.NAN
+        # metrics = lax.cond(mask, lambda x: x, lambda x: jax.tree_util.tree_map(nan_array, x), metrics)
+
+        return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
@@ -73,16 +82,15 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-        new_state, metrics = self._p_test_step(state, batch, rngs)
+
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
-        new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
 
-        @jax.jit
-        def nan_array(x):
-            return x * np.NAN
-        metrics = lax.cond(mask, lambda x: x, lambda x: jax.tree_util.tree_map(nan_array, x), metrics)
-
-        return new_state, metrics
+        state, metrics = lax.cond(mask,
+                                  lambda s: self._p_test_step(s, batch, rngs),
+                                  lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
+                                                     **self.metrics_fn(batch[1], np.NAN)))
+                                  , state)
+        return state, metrics
 
     def epoc_metrics(self):
         logging.info(f"Vector Steps: {self.state.step}")
