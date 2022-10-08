@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import plotext as plt
+from einops import reduce
 from rich.ansi import AnsiDecoder
 from rich.console import Group
 from rich.jupyter import JupyterMixin
@@ -48,6 +49,7 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
     max_v = 0
     y = []
     for n, y in ys.items():
+        y = reduce(np.array(y), "s ... -> s", reduction="mean")
         limit = max(floor(len(y) * 0.9), 10) # 10 or the last 90% of the elements
         min_v = v if (v := np.min(y[-limit:])) < min_v else min_v
         max_v = v if (v := np.max(y[-limit:])) > max_v else max_v

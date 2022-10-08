@@ -2,6 +2,7 @@ absl-py
 numpy
 jax
 jaxtyping
+einops
 flax
 setuptools
 plotext
