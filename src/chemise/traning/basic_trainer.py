@@ -32,7 +32,7 @@ FLAGS = flags.FLAGS
 Result = dict[str, Num[Array, ""]]
 State_Result = Tuple[TrainState, Result]
 Features = dict[str, Num[Array, "..."]]
-Batch = Tuple[Features, Features]
+Batch = Tuple[Features, Features] | Tuple[Features, Features, Bool[Array, "..."]]
 Rand_Dict = dict[str, jax.random.PRNGKeyArray]
 P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
@@ -117,6 +117,8 @@ class BasicTrainer:
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
 
+    batch_dims: int = 1
+
     rng_keys: List[str] = field(default_factory=list, compare=False)
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
@@ -156,7 +158,7 @@ class BasicTrainer:
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1, mask: Bool[Array, "..."] = False):
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
@@ -165,9 +167,11 @@ class BasicTrainer:
             """
         x = batch[0]
         y = batch[1]
+        mask = s[0] if (s := batch[2:3]) else True
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
-        p_loss = self.loss_fn(y, y_pred, mask)
+        p_loss = self.loss_fn(y, y_pred)
+        p_loss = jnp.where(mask, p_loss, 0.0) # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
@@ -182,7 +186,7 @@ class BasicTrainer:
         """
         return self._p_train_step(state, batch, rngs)
 
-    def _p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, mask) -> State_Result:
+    def _p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Unwrapped train step, helpful for inheritance where they want to reorder / not jit or pmap
         :param state:
@@ -197,7 +201,7 @@ class BasicTrainer:
         rngs = self._rngs_mix(rngs, state.step)
 
         step = jax.value_and_grad(self._step, has_aux=True)
-        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH, mask)
+        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
@@ -233,13 +237,14 @@ class BasicTrainer:
     def _p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         x = batch[0]
         y = batch[1]
+
         gbs = get_batch_size(batch, 2)
         loss, y_pred = self._step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    @partial(jax.jit, static_argnums=(0,2))
+    @partial(jax.jit, static_argnums=(0, 2))
     def _slice(self, r_f_state, s):
         return [x[:s] for x in r_f_state]
 
@@ -261,7 +266,7 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
@@ -274,16 +279,13 @@ class BasicTrainer:
                 if not (batch := next(d_iter, None)):
                     break
 
-                batch, mask = batch
-                np_mask = np.array(mask)
-
                 # Slice state and RNGs as needed if dev_batch is less than number of devs
                 s = get_batch_size(batch)
                 _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
                 _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
                 # Run step
-                r_state, r_metrics = step_fn(_r_state, batch, _rngs, np_mask)
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
                 self.state, metrics = unreplicate((r_state, r_metrics))
@@ -314,7 +316,7 @@ class BasicTrainer:
         :param batch:
         :return: [predictions, loss, metrics]
         """
-        x, y = batch
+        x, y = batch[:2]
         rngs = self._make_rngs()
         y_pred = self.state.apply_fn({'params': self.state.params}, batch[0], rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)
