@@ -96,6 +96,7 @@ def stack_vec_datasets(ds:list[tfd.Dataset], vec_axes:int=0, add_mask:bool=False
         zero = jax.tree_util.tree_map(lambda x: np.zeros(shape=x.shape, dtype=x.dtype.as_numpy_dtype), d.element_spec)
         pad = tfd.Dataset.from_tensors(zero)
         pad = pad.map(lambda *x: (*x, [False])) if add_mask else pad
+        pad = pad.cache()
 
         l = d.cardinality()
         d = d.map(lambda *x: (*x, [True])) if add_mask else d
@@ -112,7 +113,7 @@ def stack_vec_datasets(ds:list[tfd.Dataset], vec_axes:int=0, add_mask:bool=False
         return jax.tree_util.tree_unflatten(tree, stacked)
 
     zipped = tfd.Dataset.zip((*padded_ds,))
-    stacked = zipped.map(stack_els)
+    stacked = zipped.map(stack_els, num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
     return stacked
 
 def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
@@ -124,6 +125,7 @@ def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
     d = ds[0]
     zero = jax.tree_util.tree_map(lambda x: np.zeros(shape=x.shape, dtype=x.dtype.as_numpy_dtype), d.element_spec)
     pad = tfd.Dataset.from_tensors((*zero, [False]))
+    pad = pad.cache()
 
     lens = [d.cardinality() for d in ds]
     max_len = max(lens)
@@ -134,7 +136,7 @@ def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
     padded_ds = []
     for d in ds:
         l = d.cardinality()
-        d = d.map(lambda *x: (*x, [True]))
+        d = d.map(lambda *x: (*x, [True]), num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
         len_diff = max_len - l
         if len_diff > 0:
             d = d.concatenate(pad.repeat(len_diff))
@@ -148,5 +150,5 @@ def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
         return jax.tree_util.tree_unflatten(tree, stacked)
 
     zipped = tfd.Dataset.zip((*padded_ds,))
-    stacked = zipped.map(stack_els)
+    stacked = zipped.map(stack_els, num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
     return stacked
