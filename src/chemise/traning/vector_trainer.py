@@ -30,9 +30,9 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
     batch_dims: int = 2
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 1, None))
-    def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None,None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, None, 0, 2, None))
+    def p_train_step(self, unpack, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step.
         TODO:
@@ -40,6 +40,7 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
+        batch = unpack(batch)
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
         state, metrics = lax.cond(mask,
@@ -60,9 +61,9 @@ class VectorTrainer(BasicTrainer):
 
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 1, None))
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None,None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, None, 0, 2, None))
+    def p_apply_step(self, unpack, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -70,11 +71,12 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
+        batch = unpack(batch)
         return self._p_apply_step(state, batch, rngs)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 1, None))
-    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None,None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, None, 0, 2, None))
+    def p_test_step(self, unpack, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
         :param state: model state object
@@ -82,7 +84,7 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-
+        batch = unpack(batch)
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
         state, metrics = lax.cond(mask,

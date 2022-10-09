@@ -14,7 +14,7 @@ class Prefetch_dev:
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
 
-    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3):
+    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1):
         super(Prefetch_dev, self).__init__()
         self.data_ds = data
         self.q = queue.Queue(buffer_size)
@@ -23,10 +23,7 @@ class Prefetch_dev:
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
-    def iter(self, with_meta=False, batch_dims:int = 1):
-        queue = collections.deque()
         devices = jax.local_devices()
-        dev_count = len(devices)
 
         first_iter = self.data_ds.as_numpy_iterator()
         first = next(first_iter)
@@ -44,18 +41,28 @@ class Prefetch_dev:
         un_pack_idx = [i for dim, idx in sizes.items() for i in idx]
         un_pack_lookups = {v: i for i, v in enumerate(un_pack_idx)}
 
-        @jax.jit
-        def unpack(stacked):
-            unorder = [stacked[i][:, si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
-            order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
-            return order
-
         # pack numpy arrays to minimise number of H2D ops
         def pack_tree(*t):
             flat, _ = jax.tree_util.tree_flatten(t)
             flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
             packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
             return packed
+
+        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
+
+        @jax.jit
+        def unpack(stacked):
+            unorder = [stacked[i][si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
+            order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
+            t = jax.tree_util.tree_unflatten(tree_struct, order)
+            return t
+        self.unpack = unpack
+
+
+    def iter(self, with_meta=False, batch_dims:int = 1):
+        queue = collections.deque()
+        devices = jax.local_devices()
+        dev_count = len(devices)
 
         def stack_els(ls, devs):
             # flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
@@ -69,18 +76,15 @@ class Prefetch_dev:
             flat_n = [[t[l] for t in ls] for l in range(len(ls[0]))]
             stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
 
-            # Slice in and fill empy list for leaves of tree struct
-            un_packed = unpack(stacked)
-
-
-            t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
-            return t
+            # # Slice in and fill empy list for leaves of tree struct
+            # un_packed = unpack(stacked)
+            # t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
+            return stacked
 
         def _prefetch(data, devs):
             stack_tree = stack_els(data, devs)
             return stack_tree
 
-        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
         shard_data =list(itertools.islice(self.data, dev_count))
         prf = _prefetch(shard_data, devices[:len(shard_data)])
         queue.append(prf)

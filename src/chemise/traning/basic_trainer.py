@@ -266,7 +266,8 @@ class BasicTrainer:
         """
         callback.start_cb(self)
         d_iter = data
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(batch_dims=self.batch_dims)
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims)
+        d_iter = prefetch.iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
@@ -285,7 +286,7 @@ class BasicTrainer:
                 _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
                 # Run step
-                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+                r_state, r_metrics = step_fn(prefetch.unpack, _r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
                 self.state, metrics = unreplicate((r_state, r_metrics))
@@ -433,8 +434,9 @@ class BasicTrainer:
         :return: an iterator that yields [X, Y, Y_hat]
         """
         # data = add_device_batch(data)
-        d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        d_iter = data
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer)
+        d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
         dev_batch_size = get_batch_size(r_state)
@@ -446,7 +448,7 @@ class BasicTrainer:
             if (s := get_batch_size(batch)) < dev_batch_size:
                 r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
                 rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
-            yield self.p_apply_step(r_state, batch, rngs)
+            yield self.p_apply_step(prefetch.unpack, r_state, batch, rngs)
             c += 1
 
     def reset(self):
