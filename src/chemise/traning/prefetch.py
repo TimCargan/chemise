@@ -39,13 +39,21 @@ class Prefetch_dev:
         for i, s in enumerate(leave):
             sizes[(*s,)].append(i)
 
+        un_pack_idx = [i for dim, idx in sizes.items() for i in idx]
+        un_pack_lookups = {v: i for i, v in enumerate(un_pack_idx)}
+
+        @jax.jit
+        def unpack(stacked):
+            unorder = [stacked[i][:, si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
+            order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
+            return order
 
         def stack_els(ls, devs):
             flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
             # pack numpy arrays to minimise number of H2D ops
             packed = []
             for ft in flat:
-                p = [np.stack([l for i, l in enumerate(ft) if i in idx]) for dim, idx in sizes.items()]
+                p = [np.stack([ft[i] for i in idx]) for dim, idx in sizes.items()]
                 packed.append(p)
 
             # Send H2D
@@ -53,10 +61,8 @@ class Prefetch_dev:
             stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
 
             # Slice in and fill empy list for leaves of tree struct
-            un_packed = [None] * len(leave)
-            for i, idxs in enumerate(sizes.values()):
-                for si, ti in enumerate(idxs):
-                    un_packed[ti] = stacked[i][:,si]
+            un_packed = unpack(stacked)
+
 
             t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
             return t
