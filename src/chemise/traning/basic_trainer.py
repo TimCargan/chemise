@@ -208,8 +208,8 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int=0) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -217,6 +217,7 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
+        rngs = self._rngs_mix(rngs, c)
         return self._p_apply_step(state, batch, rngs)
 
     def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
@@ -439,17 +440,21 @@ class BasicTrainer:
         d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
+        rngs = replicate(raw_rngs)
         dev_batch_size = get_batch_size(r_state)
         c = 0
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = replicate(self._rngs_mix(raw_rngs, c))
-            if (s := get_batch_size(batch)) < dev_batch_size:
-                r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
-            yield self.p_apply_step(prefetch.unpack, r_state, batch, rngs)
+
+            s = get_batch_size(batch)
+            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+
+            yield self.p_apply_step(_r_state, batch, _rngs, c)
             c += 1
+            if c % 500 == 0:
+                logging.info("Eval step: %d", c)
 
     def reset(self):
         """
