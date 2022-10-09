@@ -70,15 +70,10 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        y = batch[1]
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
-        @jax.jit
-        def nan_array(x):
-            return x * np.NAN
-
         results = lax.cond(mask,
                            lambda s: self._p_apply_step(s, batch, rngs, c),
-                           lambda s: (*batch, jax.tree_util.tree_map(nan_array, y))
+                           lambda s: (*batch, batch[1]["pred"] * np.NAN)
                            , state)
 
         return results
