@@ -26,17 +26,49 @@ class Prefetch_dev:
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
-        def _prefetch(data, devs):
-            return jax.device_put_sharded(data, devs)
 
         first = next(self.data)
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
                       len(devices), ", ".join(str(i) for i in batch_dim_size))
 
-        batch_size = int(np.prod(batch_dim_size))
+        # Cacluate node sizes
+        shapes = jax.tree_util.tree_map(lambda x: np.array(x.shape), first)
+        leave, tree_struct = jax.tree_util.tree_flatten(shapes)
+        sizes = collections.defaultdict(list)
+        for i, s in enumerate(leave):
+            sizes[(*s,)].append(i)
+
+
+        def stack_els(ls, devs):
+            flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+            # pack numpy arrays to minimise number of H2D ops
+            packed = []
+            for ft in flat:
+                p = [np.stack([l for i, l in enumerate(ft) if i in idx]) for dim, idx in sizes.items()]
+                packed.append(p)
+
+            # Send H2D
+            flat_n = [[t[l] for t in packed] for l in range(len(packed[0]))]
+            stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
+
+            # Slice in and fill empy list for leaves of tree struct
+            un_packed = [None] * len(leave)
+            for i, idxs in enumerate(sizes.values()):
+                for si, ti in enumerate(idxs):
+                    un_packed[ti] = stacked[i][:,si]
+
+            t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
+            return t
+
+        def _prefetch(data, devs):
+            stack_tree = stack_els(data, devs)
+            return stack_tree
+
+
         shard_data = [first] + list(itertools.islice(self.data, dev_count - 1))
-        queue.append(_prefetch(shard_data, devices[:len(shard_data)]))
+        prf = _prefetch(shard_data, devices[:len(shard_data)])
+        queue.append(prf)
 
         def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
             for _ in range(n):
