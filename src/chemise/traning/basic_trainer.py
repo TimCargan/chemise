@@ -265,7 +265,7 @@ class BasicTrainer:
         :return:
         """
         callback.start_cb(self)
-        d_iter = data.as_numpy_iterator()
+        d_iter = data
         d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
