@@ -40,7 +40,6 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        # batch = unpack(batch)
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
         state, metrics = lax.cond(mask,
@@ -71,7 +70,6 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        # batch = unpack(batch)
         return self._p_apply_step(state, batch, rngs)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None, 0, 0, 0), axis_name="batch")
@@ -84,7 +82,6 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-        # batch = unpack(batch)
         mask = jnp.any(s[0]) if (s := batch[2:3]) else True
 
         state, metrics = lax.cond(mask,
