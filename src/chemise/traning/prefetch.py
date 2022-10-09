@@ -5,6 +5,7 @@ from threading import Thread
 
 import jax
 import numpy as np
+import tensorflow as tf
 from absl import logging
 
 
@@ -13,9 +14,9 @@ class Prefetch_dev:
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
 
-    def __init__(self, data: iter, buffer_size: int = 3):
+    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3):
         super(Prefetch_dev, self).__init__()
-        self.data = data
+        self.data_ds = data
         self.q = queue.Queue(buffer_size)
         self.buffer_size = buffer_size
         platform = jax.default_backend()
@@ -27,7 +28,8 @@ class Prefetch_dev:
         devices = jax.local_devices()
         dev_count = len(devices)
 
-        first = next(self.data)
+        first_iter = self.data_ds.as_numpy_iterator()
+        first = next(first_iter)
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
                       len(devices), ", ".join(str(i) for i in batch_dim_size))
@@ -48,16 +50,23 @@ class Prefetch_dev:
             order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
             return order
 
+        # pack numpy arrays to minimise number of H2D ops
+        def pack_tree(*t):
+            flat, _ = jax.tree_util.tree_flatten(t)
+            flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
+            packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
+            return packed
+
         def stack_els(ls, devs):
-            flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-            # pack numpy arrays to minimise number of H2D ops
-            packed = []
-            for ft in flat:
-                p = [np.stack([ft[i] for i in idx]) for dim, idx in sizes.items()]
-                packed.append(p)
+            # flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+            # # pack numpy arrays to minimise number of H2D ops
+            # packed = []
+            # for ft in flat:
+            #     p = [np.stack([ft[i] for i in idx]) for dim, idx in sizes.items()]
+            #     packed.append(p)
 
             # Send H2D
-            flat_n = [[t[l] for t in packed] for l in range(len(packed[0]))]
+            flat_n = [[t[l] for t in ls] for l in range(len(ls[0]))]
             stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
 
             # Slice in and fill empy list for leaves of tree struct
@@ -71,8 +80,8 @@ class Prefetch_dev:
             stack_tree = stack_els(data, devs)
             return stack_tree
 
-
-        shard_data = [first] + list(itertools.islice(self.data, dev_count - 1))
+        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
+        shard_data =list(itertools.islice(self.data, dev_count))
         prf = _prefetch(shard_data, devices[:len(shard_data)])
         queue.append(prf)
 
@@ -104,7 +113,7 @@ class Prefetch_dev:
                     #     batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
                     #     queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
-        enqueue(self.buffer_size - 1)  # Fill up the buffer, less the first already in.
+        enqueue(self.buffer_size)  # Fill up the buffer, less the first already in.
         while queue:
             yield queue.popleft()
             enqueue(1)
