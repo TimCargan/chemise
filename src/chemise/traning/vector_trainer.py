@@ -30,7 +30,7 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
     batch_dims: int = 2
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
@@ -60,8 +60,8 @@ class VectorTrainer(BasicTrainer):
 
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None,None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, None, 0, 1, None))
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
@@ -72,7 +72,7 @@ class VectorTrainer(BasicTrainer):
         """
         return self._p_apply_step(state, batch, rngs)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,1), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
