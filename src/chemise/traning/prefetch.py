@@ -25,14 +25,13 @@ class Prefetch_dev:
 
         devices = jax.local_devices()
 
-        first_iter = self.data_ds.as_numpy_iterator()
-        first = next(first_iter)
+        first = self.data_ds.element_spec
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
                       len(devices), ", ".join(str(i) for i in batch_dim_size))
 
         # Cacluate node sizes
-        shapes = jax.tree_util.tree_map(lambda x: np.array(x.shape), first)
+        shapes = jax.tree_util.tree_map(lambda x: np.array((*x.shape, sum(bytes(str(x.dtype), 'utf-8')))), first)
         leave, tree_struct = jax.tree_util.tree_flatten(shapes)
         sizes = collections.defaultdict(list)
         for i, s in enumerate(leave):
@@ -44,12 +43,13 @@ class Prefetch_dev:
         # pack numpy arrays to minimise number of H2D ops
         def pack_tree(*t):
             flat, _ = jax.tree_util.tree_flatten(t)
-            flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
+            # flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
             packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
             return packed
 
         self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
 
+        # @jax.pmap
         @jax.jit
         def unpack(stacked):
             unorder = [stacked[i][si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
@@ -59,7 +59,7 @@ class Prefetch_dev:
         self.unpack = unpack
 
 
-    def iter(self, with_meta=False, batch_dims:int = 1):
+    def iter(self, batch_dims:int = 1):
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
