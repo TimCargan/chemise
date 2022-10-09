@@ -286,7 +286,7 @@ class BasicTrainer:
                 _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
                 # Run step
-                r_state, r_metrics = step_fn(prefetch.unpack, _r_state, batch, _rngs)
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
                 self.state, metrics = unreplicate((r_state, r_metrics))
