@@ -443,7 +443,6 @@ class BasicTrainer:
         rngs = replicate(raw_rngs)
         dev_batch_size = get_batch_size(r_state)
         c = 0
-        logging.info("Eval step: %d", c)
         while True:
             if not (batch := next(d_iter, None)):
                 break
@@ -454,8 +453,6 @@ class BasicTrainer:
 
             yield self.p_apply_step(_r_state, batch, _rngs, c)
             c += 1
-            if c % 10 == 0:
-                logging.info("Eval step: %d", c)
 
     def reset(self):
         """

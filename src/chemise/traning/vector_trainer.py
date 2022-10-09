@@ -70,7 +70,18 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        return self._p_apply_step(state, batch, rngs, c)
+        y = batch[1]
+        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        @jax.jit
+        def nan_array(x):
+            return x * np.NAN
+
+        results = lax.cond(mask,
+                           lambda s: self._p_apply_step(s, batch, rngs, c),
+                           lambda s: (*batch, jax.tree_util.tree_map(nan_array, y))
+                           , state)
+
+        return results
 
     @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
