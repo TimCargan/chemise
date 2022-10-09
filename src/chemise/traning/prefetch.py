@@ -49,7 +49,7 @@ class Prefetch_dev:
 
         self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
 
-        # @jax.pmap
+        @jax.pmap
         @jax.jit
         def unpack(stacked):
             unorder = [stacked[i][si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
@@ -119,7 +119,9 @@ class Prefetch_dev:
 
         enqueue(self.buffer_size)  # Fill up the buffer, less the first already in.
         while queue:
-            yield queue.popleft()
+            el = queue.popleft()
+            tree = self.unpack(el)
+            yield tree
             enqueue(1)
 
 
