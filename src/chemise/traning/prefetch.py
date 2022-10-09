@@ -5,6 +5,7 @@ from threading import Thread
 
 import jax
 import numpy as np
+import tensorflow as tf
 from absl import logging
 
 
@@ -13,30 +14,80 @@ class Prefetch_dev:
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
 
-    def __init__(self, data: iter, buffer_size: int = 3):
+    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1):
         super(Prefetch_dev, self).__init__()
-        self.data = data
+        self.data_ds = data
         self.q = queue.Queue(buffer_size)
         self.buffer_size = buffer_size
         platform = jax.default_backend()
         d_count = jax.device_count(platform)
         logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
 
-    def iter(self, with_meta=False, batch_dims:int = 1):
-        queue = collections.deque()
         devices = jax.local_devices()
-        dev_count = len(devices)
-        def _prefetch(data, devs):
-            return jax.device_put_sharded(data, devs)
 
-        first = next(self.data)
+        first = self.data_ds.element_spec
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
                       len(devices), ", ".join(str(i) for i in batch_dim_size))
 
-        batch_size = int(np.prod(batch_dim_size))
-        shard_data = [first] + list(itertools.islice(self.data, dev_count - 1))
-        queue.append(_prefetch(shard_data, devices[:len(shard_data)]))
+        # Cacluate node sizes
+        shapes = jax.tree_util.tree_map(lambda x: np.array((*x.shape, sum(bytes(str(x.dtype), 'utf-8')))), first)
+        leave, tree_struct = jax.tree_util.tree_flatten(shapes)
+        sizes = collections.defaultdict(list)
+        for i, s in enumerate(leave):
+            sizes[(*s,)].append(i)
+
+        un_pack_idx = [i for dim, idx in sizes.items() for i in idx]
+        un_pack_lookups = {v: i for i, v in enumerate(un_pack_idx)}
+
+        # pack numpy arrays to minimise number of H2D ops
+        def pack_tree(*t):
+            flat, _ = jax.tree_util.tree_flatten(t)
+            # flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
+            packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
+            return packed
+
+        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
+
+        @jax.pmap
+        @jax.jit
+        def unpack(stacked):
+            unorder = [stacked[i][si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
+            order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
+            t = jax.tree_util.tree_unflatten(tree_struct, order)
+            return t
+        self.unpack = unpack
+
+
+    def iter(self, batch_dims:int = 1):
+        queue = collections.deque()
+        devices = jax.local_devices()
+        dev_count = len(devices)
+
+        def stack_els(ls, devs):
+            # flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+            # # pack numpy arrays to minimise number of H2D ops
+            # packed = []
+            # for ft in flat:
+            #     p = [np.stack([ft[i] for i in idx]) for dim, idx in sizes.items()]
+            #     packed.append(p)
+
+            # Send H2D
+            flat_n = [[t[l] for t in ls] for l in range(len(ls[0]))]
+            stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
+
+            # # Slice in and fill empy list for leaves of tree struct
+            # un_packed = unpack(stacked)
+            # t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
+            return stacked
+
+        def _prefetch(data, devs):
+            stack_tree = stack_els(data, devs)
+            return stack_tree
+
+        shard_data =list(itertools.islice(self.data, dev_count))
+        prf = _prefetch(shard_data, devices[:len(shard_data)])
+        queue.append(prf)
 
         def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
             for _ in range(n):
@@ -66,9 +117,11 @@ class Prefetch_dev:
                     #     batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
                     #     queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
-        enqueue(self.buffer_size - 1)  # Fill up the buffer, less the first already in.
+        enqueue(self.buffer_size)  # Fill up the buffer, less the first already in.
         while queue:
-            yield queue.popleft()
+            el = queue.popleft()
+            tree = self.unpack(el)
+            yield tree
             enqueue(1)
 
 

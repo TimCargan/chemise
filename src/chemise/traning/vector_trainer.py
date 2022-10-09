@@ -30,7 +30,7 @@ P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 class VectorTrainer(BasicTrainer):
     batch_dims: int = 2
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
@@ -40,7 +40,7 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
 
         state, metrics = lax.cond(mask,
                                   lambda s: self._p_train_step(s, batch, rngs),
@@ -60,9 +60,9 @@ class VectorTrainer(BasicTrainer):
 
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 1, None))
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None, None))
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None, c: int = 0) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -70,9 +70,15 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        return self._p_apply_step(state, batch, rngs)
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
+        results = lax.cond(mask,
+                           lambda s: self._p_apply_step(s, batch, rngs, c),
+                           lambda s: (*batch, batch[1]["pred"] * np.NAN)
+                           , state)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0), axis_name="batch")
+        return results
+
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
     def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
@@ -82,8 +88,7 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-
-        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
 
         state, metrics = lax.cond(mask,
                                   lambda s: self._p_test_step(s, batch, rngs),
@@ -124,7 +129,7 @@ def stack_vec_datasets(ds:list[tfd.Dataset], vec_axes:int=0, add_mask:bool=False
     stacked = zipped.map(stack_els, num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
     return stacked
 
-def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
+def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None, add_mask:bool=True):
     """
     Pack a list of datasets into a single dataset with
     :param ds:
@@ -132,10 +137,12 @@ def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
     """
     d = ds[0]
     zero = jax.tree_util.tree_map(lambda x: np.zeros(shape=x.shape, dtype=x.dtype.as_numpy_dtype), d.element_spec)
-    pad = tfd.Dataset.from_tensors((*zero, [False]))
+    pad = tfd.Dataset.from_tensors(zero)
+    pad = pad.map(lambda *x: (*x, [False])) if add_mask else pad
     pad = pad.cache()
 
-    lens = [d.cardinality() for d in ds]
+    lens = [tc if (tc := d._hack_cardinality) is not None else d.cardinality() for d in ds]
+    assert min(lens) > 0, "Cannot stack batches where cardinality is unknown. Use the hack `.card` if know after ops"
     max_len = max(lens)
     if pad_to_batch:
         r = max_len % pad_to_batch
@@ -144,7 +151,7 @@ def stack_datasets(ds:list[tfd.Dataset], pad_to_batch:int=None):
     padded_ds = []
     for d in ds:
         l = d.cardinality()
-        d = d.map(lambda *x: (*x, [True]), num_parallel_calls=tfd.AUTOTUNE, deterministic=False)
+        d = d.map(lambda *x: (*x, [True]), num_parallel_calls=tfd.AUTOTUNE, deterministic=False) if add_mask else d
         len_diff = max_len - l
         if len_diff > 0:
             d = d.concatenate(pad.repeat(len_diff))

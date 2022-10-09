@@ -167,11 +167,11 @@ class BasicTrainer:
             """
         x = batch[0]
         y = batch[1]
-        mask = s[0] if (s := batch[2:3]) else True
+        mask = s[0] if (s := batch[3:4]) else True
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)
-        p_loss = jnp.where(mask, p_loss, 0.0) # Apply mask to loss
+        p_loss = jnp.where(mask, p_loss, 0.0)  # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
@@ -208,8 +208,8 @@ class BasicTrainer:
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 0) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -217,9 +217,10 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        return self._p_apply_step(state, batch, rngs)
+        return self._p_apply_step(state, batch, rngs, c)
 
-    def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
+    def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 0) -> Tuple[Features, ...]:
+        rngs = self._rngs_mix(rngs, c)
         _, y_pred = self._step(state.params, batch, rngs)
         return (*batch, y_pred)
 
@@ -265,8 +266,9 @@ class BasicTrainer:
         :return:
         """
         callback.start_cb(self)
-        d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter(batch_dims=self.batch_dims)
+        d_iter = data
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims)
+        d_iter = prefetch.iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
@@ -433,20 +435,23 @@ class BasicTrainer:
         :return: an iterator that yields [X, Y, Y_hat]
         """
         # data = add_device_batch(data)
-        d_iter = data.as_numpy_iterator()
-        d_iter = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer).iter()
+        d_iter = data
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer)
+        d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
+        rngs = replicate(raw_rngs)
         dev_batch_size = get_batch_size(r_state)
         c = 0
         while True:
             if not (batch := next(d_iter, None)):
                 break
-            rngs = replicate(self._rngs_mix(raw_rngs, c))
-            if (s := get_batch_size(batch)) < dev_batch_size:
-                r_state = jax.tree_util.tree_map(lambda x: x[:s], r_state)
-                rngs = jax.tree_util.tree_map(lambda x: x[:s], rngs)
-            yield self.p_apply_step(r_state, batch, rngs)
+
+            s = get_batch_size(batch)
+            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+
+            yield self.p_apply_step(_r_state, batch, _rngs, c)
             c += 1
 
     def reset(self):

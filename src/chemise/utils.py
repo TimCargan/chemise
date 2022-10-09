@@ -57,7 +57,9 @@ def list_dict_to_dict_list(dict_list):
     if not dict_list:
         return {}
     keys = dict_list[0].keys()
-    res = {k: [x[k] for x in dict_list] for k in keys}
+    res = {k: [] for k in keys}
+    for x in dict_list:
+        [res[k].append(x[k]) for k in keys]
     return res
 
 
