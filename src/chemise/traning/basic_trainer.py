@@ -171,7 +171,7 @@ class BasicTrainer:
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)
-        p_loss = jnp.where(mask, p_loss, 0.0) # Apply mask to loss
+        p_loss = jnp.where(mask, p_loss, 0.0)  # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
@@ -209,7 +209,7 @@ class BasicTrainer:
         return state, metrics
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int=0) -> Tuple[Features, ...]:
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 0) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -217,10 +217,10 @@ class BasicTrainer:
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        rngs = self._rngs_mix(rngs, c)
-        return self._p_apply_step(state, batch, rngs)
+        return self._p_apply_step(state, batch, rngs, c)
 
-    def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> Tuple[Features, ...]:
+    def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 0) -> Tuple[Features, ...]:
+        rngs = self._rngs_mix(rngs, c)
         _, y_pred = self._step(state.params, batch, rngs)
         return (*batch, y_pred)
 

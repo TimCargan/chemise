@@ -60,9 +60,9 @@ class VectorTrainer(BasicTrainer):
 
         return state, metrics
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
-    @partial(jax.vmap, in_axes=(None, 0, 1, None))
-    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None) -> Tuple[Features, ...]:
+    @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    @partial(jax.vmap, in_axes=(None, 0, 1, None, None))
+    def p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict = None, c: int = 0) -> Tuple[Features, ...]:
         """
         Apply model to a batch of data returning
         :param state: model state object
@@ -70,7 +70,7 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        return self._p_apply_step(state, batch, rngs)
+        return self._p_apply_step(state, batch, rngs, c)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0), in_axes=(None, 0, 0, 0), axis_name="batch")
     @partial(jax.vmap, in_axes=(None, 0, 1, None))
