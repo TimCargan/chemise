@@ -167,7 +167,7 @@ class BasicTrainer:
             """
         x = batch[0]
         y = batch[1]
-        mask = s[0] if (s := batch[2:3]) else True
+        mask = s[0] if (s := batch[3:4]) else True
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
         p_loss = self.loss_fn(y, y_pred)

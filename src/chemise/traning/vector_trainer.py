@@ -40,7 +40,7 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
 
         state, metrics = lax.cond(mask,
                                   lambda s: self._p_train_step(s, batch, rngs),
@@ -70,7 +70,7 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: tuple of [X, Y, Y_hat]
         """
-        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
         results = lax.cond(mask,
                            lambda s: self._p_apply_step(s, batch, rngs, c),
                            lambda s: (*batch, batch[1]["pred"] * np.NAN)
@@ -88,7 +88,7 @@ class VectorTrainer(BasicTrainer):
         :param rngs: dict of rngs for use in the model
         :return: [State, dict metrics]
         """
-        mask = jnp.any(s[0]) if (s := batch[2:3]) else True
+        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
 
         state, metrics = lax.cond(mask,
                                   lambda s: self._p_test_step(s, batch, rngs),
