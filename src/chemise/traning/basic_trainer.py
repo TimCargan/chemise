@@ -157,7 +157,6 @@ class BasicTrainer:
         # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
-    @partial(jax.jit, static_argnums=(0,))
     def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
@@ -174,6 +173,16 @@ class BasicTrainer:
         p_loss = jnp.where(mask, p_loss, 0.0)  # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _j_step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
+        """
+            Run a single step and calculate the loss value.
+            Here so we only need on trace for train and eval per batch size
+            :param params: params of model
+            :return: [Loss, predictions]
+            """
+        return self._step(params, batch, rngs, global_batch)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
@@ -200,9 +209,14 @@ class BasicTrainer:
         GLOBAL_BATCH = get_batch_size(batch, 2)
         rngs = self._rngs_mix(rngs, state.step)
 
-        step = jax.value_and_grad(self._step, has_aux=True)
+        step = jax.value_and_grad(self._j_step, has_aux=True)
         (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
+        # Scale grads by batch size and mask, i.e. if there are lots of examples the grads should be bigger
+        mask = s[0] if (s := batch[3:4]) else True
+        scale = jnp.sum(mask) / get_batch_size(batch) # Num seen examples / batch size
+        grads = jax.tree_util.tree_map(jax.jit(lambda x: x*scale), grads) #grads * scale
+
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
@@ -221,7 +235,7 @@ class BasicTrainer:
 
     def _p_apply_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 0) -> Tuple[Features, ...]:
         rngs = self._rngs_mix(rngs, c)
-        _, y_pred = self._step(state.params, batch, rngs)
+        _, y_pred = self._j_step(state.params, batch, rngs)
         return (*batch, y_pred)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
@@ -240,7 +254,7 @@ class BasicTrainer:
         y = batch[1]
 
         gbs = get_batch_size(batch, 2)
-        loss, y_pred = self._step(state.params, batch, rngs, global_batch=gbs)
+        loss, y_pred = self._j_step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
         return state, metrics
