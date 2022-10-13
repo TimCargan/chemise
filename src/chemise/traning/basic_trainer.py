@@ -212,11 +212,6 @@ class BasicTrainer:
         step = jax.value_and_grad(self._j_step, has_aux=True)
         (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
-        # Scale grads by batch size and mask, i.e. if there are lots of examples the grads should be bigger
-        # mask = s[0] if (s := batch[3:4]) else True
-        # scale = jnp.sum(mask) / get_batch_size(batch) # Num seen examples / batch size
-        # grads = jax.tree_util.tree_map(jax.jit(lambda x: x*scale), grads) #grads * scale
-
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
