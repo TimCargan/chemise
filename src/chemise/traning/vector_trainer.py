@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 from absl import logging, flags
+from flax.jax_utils import replicate
 from flax.training.train_state import TrainState
 from jax import lax
 from jaxtyping import Num, Array
@@ -100,6 +101,19 @@ class VectorTrainer(BasicTrainer):
     def epoc_metrics(self):
         logging.info(f"Vector Steps: {self.state.step}")
         return super(VectorTrainer, self).epoc_metrics()
+
+    def step(self, batch: Batch) -> Tuple[Features, Num[Array, ""], Result]:
+        params = self.state
+        # x, y = batch[:2]
+        rngs = replicate(self._make_rngs())
+        # y_pred = self.state.apply_fn({'params': }, batch[0], rngs=rngs)
+        # p_loss = self.loss_fn(y, y_pred)
+        # met = self.metrics_fn(y, y_pred)
+        # params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1
+        v = jax.vmap(super(VectorTrainer, self)._p_train_step, in_axes=(0, 1, None), axis_name="plant")
+        p = jax.pmap(v, in_axes=(None, None, 0), axis_name="batch")
+        res = p(params, batch, rngs)
+        return res
 
 def stack_vec_datasets(ds:list[tfd.Dataset], vec_axes:int=0, add_mask:bool=False):
     lens = [d.cardinality() for d in ds]
