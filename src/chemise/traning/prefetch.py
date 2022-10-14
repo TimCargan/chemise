@@ -85,7 +85,7 @@ class Prefetch_dev:
             stack_tree = stack_els(data, devs)
             return stack_tree
 
-        shard_data =list(itertools.islice(self.data, dev_count))
+        shard_data = list(itertools.islice(self.data, dev_count))
         prf = _prefetch(shard_data, devices[:len(shard_data)])
         queue.append(prf)
 
