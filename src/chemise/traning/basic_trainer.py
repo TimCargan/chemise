@@ -263,7 +263,7 @@ class BasicTrainer:
         leaves = self._slice(leaves, s)
         return treedef.unflatten(leaves)
 
-    def _stateful_step_runner(self, data: tfd.Dataset, step_fn: P_Func, hist: list, callback: StepCallback,
+    def _stateful_step_runner(self, data: Prefetch_dev, step_fn: P_Func, hist: list, callback: StepCallback,
                               training: bool = True) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
@@ -275,9 +275,7 @@ class BasicTrainer:
         :return:
         """
         callback.start_cb(self)
-        d_iter = data
-        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims)
-        d_iter = prefetch.iter(batch_dims=self.batch_dims)
+        d_iter = data.iter(batch_dims=self.batch_dims)
         # Replicate state to all devices, use this ref over self.state to reduce / broadcast calls
         r_state = replicate(self.state)
         rngs = replicate(self._make_rngs())
@@ -385,6 +383,9 @@ class BasicTrainer:
         duration = seconds_pretty(duration)
         logging.info(f"Setup complete took: {duration}")
 
+        train_data_iter = Prefetch_dev(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=True)
+        val_data_iter = Prefetch_dev(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=False) if val_data else None
+
         for e in range(self.num_epochs):
             logging.debug("Starting epoch %d", e)
             epoch_start_time = time.monotonic()
@@ -393,7 +394,7 @@ class BasicTrainer:
 
             # Run Train Step
             logging.debug("Starting train step of epoch %d", e)
-            self._stateful_step_runner(train_data, self.p_train_step, self.train_hist["epochs"][-1]["train"],
+            self._stateful_step_runner(train_data_iter, self.p_train_step, self.train_hist["epochs"][-1]["train"],
                                        callbacks.train_step_callbacks())
 
             # Update after first epoch sine they should all be the same size
@@ -403,7 +404,7 @@ class BasicTrainer:
             # Test model - Only run if there is val_data
             if val_data:
                 logging.debug("Starting val step of epoch %d", e)
-                self._stateful_step_runner(val_data, self.p_test_step, self.train_hist["epochs"][-1]["test"],
+                self._stateful_step_runner(val_data_iter, self.p_test_step, self.train_hist["epochs"][-1]["test"],
                                            callbacks.test_step_callbacks(), training=False)
 
                 # Update after first epoch sine they should be the same size
@@ -445,7 +446,7 @@ class BasicTrainer:
         """
         # data = add_device_batch(data)
         d_iter = data
-        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer)
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False)
         d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
