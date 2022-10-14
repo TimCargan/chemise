@@ -47,7 +47,7 @@ class Prefetch_dev:
             packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
             return packed
 
-        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE).as_numpy_iterator()
+        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE)
 
         @jax.pmap
         @jax.jit
@@ -63,35 +63,17 @@ class Prefetch_dev:
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
-
-        def stack_els(ls, devs):
-            # flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-            # # pack numpy arrays to minimise number of H2D ops
-            # packed = []
-            # for ft in flat:
-            #     p = [np.stack([ft[i] for i in idx]) for dim, idx in sizes.items()]
-            #     packed.append(p)
-
-            # Send H2D
-            flat_n = [[t[l] for t in ls] for l in range(len(ls[0]))]
-            stacked = [jax.device_put_sharded(x, devs) for x in flat_n]
-
-            # # Slice in and fill empy list for leaves of tree struct
-            # un_packed = unpack(stacked)
-            # t = jax.tree_util.tree_unflatten(tree_struct, un_packed)
-            return stacked
+        data_iter = self.data.as_numpy_iterator()
 
         def _prefetch(data, devs):
-            stack_tree = stack_els(data, devs)
-            return stack_tree
-
-        shard_data = list(itertools.islice(self.data, dev_count))
-        prf = _prefetch(shard_data, devices[:len(shard_data)])
-        queue.append(prf)
+            # Send H2D
+            flat_n = [[t[l] for t in data] for l in range(len(data[0]))]
+            sent_data = [jax.device_put_sharded(x, devs) for x in flat_n]
+            return sent_data
 
         def enqueue(n):  # Enqueues *up to* `n` elements from the iterator.
             for _ in range(n):
-                batch = list(itertools.islice(self.data, dev_count))
+                batch = list(itertools.islice(data_iter, dev_count))
                 num_shards = len(batch)
                 if num_shards < 1:
                     return
@@ -105,17 +87,6 @@ class Prefetch_dev:
                     # End of batch just use one GPU for now, add un-even to queue
                     for el in batch:
                         queue.append(_prefetch([el], devices[: 1]))
-                    # # End of batch, add un-even to queue
-                    # batch_sizes = collections.defaultdict(list)
-                    # for i, s in enumerate(bs):
-                    #     batch_sizes[s].append(i)
-                    #
-                    # logging.debug(f"End of batch things, {batch_sizes}")
-                    #
-                    # sizes = sorted(batch_sizes.keys(), reverse=True)
-                    # for bs in sizes:
-                    #     batch_part = [el for i, el in enumerate(batch) if i in batch_sizes[bs]]
-                    #     queue.append(_prefetch(batch_part, devices[: len(batch_part)]))
 
         enqueue(self.buffer_size)  # Fill up the buffer, less the first already in.
         while queue:
