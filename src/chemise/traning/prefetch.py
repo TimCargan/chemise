@@ -1,12 +1,96 @@
 import collections
 import itertools
 import queue
+from functools import partial
 from threading import Thread
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
 from absl import logging
+from einops import rearrange
+from jax.tree_util import tree_map
+
+FOLDS = [[1190, 1395, 1005, 17314],
+         [458, 471, 918, 212],
+         [1467, 56424, 862, 1161],
+         [384, 643, 1007, 56963],
+         [534, 55827, 235, 440]]
+
+# @partial(jax.pmap, in_axes=(0, None), axis_name="batch")
+
+@jax.pmap
+@jax.jit
+def make_vec_list(data):
+    batches = []
+    vecs = []
+    zeros = []
+    for el in data:
+        batch_count = el[-1].shape[0]
+        vec = el[-1].shape[2]
+        batches.append(batch_count)
+        vecs.append(vec)
+        zeros.append(tree_map(jax.jit(lambda n: jnp.zeros_like(n[0])), el))
+
+    def slice(n, i):
+        return n[i]
+    def tree_slice(tree, batch_index):
+        i = tree_map(lambda x: batch_index, tree)
+        return tree_map(slice, tree, i)
+    def stack_els(ls):
+        tree = jax.tree_util.tree_structure(ls[0])
+        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
+        stacked = [jnp.concatenate(x, axis=2) for x in flat_n]
+        return jax.tree_util.tree_unflatten(tree, stacked)
+
+    max_batches = max(batches)
+
+    padded = [tree_map(lambda x: jnp.pad(x, [(0, (max_batches - x.shape[0] % max_batches) % max_batches), *[(0, 0)] * len(x.shape[1:])]),
+                el) for el in data]
+    step = stack_els(padded)
+    lefs, tree = jax.tree_util.tree_flatten(step)
+    sliced = [[l[i] for l in lefs] for i in range(max_batches)]
+    output = [tree.unflatten(leaves) for leaves in sliced]
+    return output
+
+@jax.pmap
+def extract(x, rmask):
+    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
+    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
+    global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
+    return global_batched
+
+
+@partial(jax.pmap, in_axes=(0, 0, None, None))
+def fold_extract(x, rmask, fold_idx, train):
+    plants = x[0]["plant"][:, 0, 0]
+    fold_mask = (plants == fold_idx)
+    fold_mask = jnp.any(fold_mask, axis=0)
+    fold_mask = jax.lax.cond(train, lambda v: jnp.logical_not(v), lambda v: v, fold_mask)
+    fold_mask = jnp.reshape(fold_mask, (-1, 1))
+
+    # fold_mask = fold_mask.astype(int)
+
+    def x_help(fold_mask, shape):
+        extra_dims = (np.arange(len(shape) - 2) + 1) * -1
+        reshape = jnp.expand_dims(fold_mask, axis=extra_dims)
+        return reshape
+
+    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
+    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
+    global_shuffled = tree_map(lambda n: n * x_help(fold_mask, n.shape), global_shuffled)
+    global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
+
+    return global_batched
+
+
+@jax.pmap
+def extract_tree(xys):
+    local = tree_map(lambda l: rearrange(l, "(b s) ... -> b s ...", s=64), xys)
+    glob = tree_map(lambda x: rearrange(x, "b p ... -> (p b) 1 ..."), xys)
+    return local, glob
 
 
 class Prefetch_dev:
@@ -14,8 +98,9 @@ class Prefetch_dev:
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
 
-    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1):
+    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1, train: bool=True):
         super(Prefetch_dev, self).__init__()
+        self.train = train
         self.data_ds = data
         self.q = queue.Queue(buffer_size)
         self.buffer_size = buffer_size
@@ -58,6 +143,16 @@ class Prefetch_dev:
             return t
         self.unpack = unpack
 
+    def unbatch(self, xys):
+        local_vec, global_explode = extract_tree(xys)
+        zero_mask = global_explode[-1][:, :, 0, 0]
+        g_v = extract(global_explode, zero_mask)
+        cvs = []
+        for f in FOLDS:
+            pf = jnp.reshape(jnp.array(f), (4, 1))
+            fold_mask = fold_extract(global_explode, zero_mask, pf, self.train)
+            cvs.append(fold_mask)
+        return (g_v, *cvs, local_vec)
 
     def iter(self, batch_dims:int = 1):
         queue = collections.deque()
@@ -92,7 +187,11 @@ class Prefetch_dev:
         while queue:
             el = queue.popleft()
             tree = self.unpack(el)
-            yield tree
+            ub = self.unbatch(tree)
+            batches = make_vec_list(ub)
+            for b in batches:
+                yield b
+            # yield tree
             enqueue(1)
 
 

@@ -383,8 +383,8 @@ class BasicTrainer:
         duration = seconds_pretty(duration)
         logging.info(f"Setup complete took: {duration}")
 
-        train_data_iter = Prefetch_dev(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims)
-        val_data_iter = Prefetch_dev(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims) if val_data else None
+        train_data_iter = Prefetch_dev(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=True)
+        val_data_iter = Prefetch_dev(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=False) if val_data else None
 
         for e in range(self.num_epochs):
             logging.debug("Starting epoch %d", e)
