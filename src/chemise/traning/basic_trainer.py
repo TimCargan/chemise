@@ -446,7 +446,7 @@ class BasicTrainer:
         """
         # data = add_device_batch(data)
         d_iter = data
-        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer)
+        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False)
         d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
