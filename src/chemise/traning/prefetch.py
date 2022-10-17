@@ -219,7 +219,7 @@ class Prefetch_dev:
             tree = self.unpack(el)
             ub = self.unbatch(tree)
             batches = make_vec_list(ub)
-            logging.log_first_n(logging.INFO, "un-batched data", 1)
+            logging.log_every_n(logging.DEBUG, "un-batched data", 5)
             for b in batches:
                 yield b
             # yield tree
