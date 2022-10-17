@@ -38,6 +38,7 @@ def make_vec_list(data):
     def tree_slice(tree, batch_index):
         i = tree_map(lambda x: batch_index, tree)
         return tree_map(slice, tree, i)
+
     def stack_els(ls):
         tree = jax.tree_util.tree_structure(ls[0])
         flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
@@ -69,27 +70,45 @@ def add_mode(xys, mode):
     xs["mode"] = jnp.where(xys[0]["plant"] == 0, 0, mode)
     return (xs, *xys[1:])
 
+@jax.pmap
+def add_kn(xys):
+    def stack_els(ls):
+        tree = jax.tree_util.tree_structure(ls[0])
+        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
+        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
+        stacked = [jnp.concatenate(x, axis=0) for x in flat_n]
+        return jax.tree_util.tree_unflatten(tree, stacked)
+    def _add_kn(xs):
+        xs = {k: v for k, v in xs.items()}
+        xs["irradiance_in"] = xs["irradiance_in_kn"]
+        return xs
+
+    kn_extract = (_add_kn(xys[0]), *xys[1:])
+    kn_extract = add_mode(kn_extract, MODE_CODE["kn"])
+    cv_kn = stack_els([xys, kn_extract])
+    return cv_kn
+
 @partial(jax.pmap, in_axes=(0, 0, None, None))
 def fold_extract(x, rmask, fold_idx, train):
+    # Extract and shuffle data
+    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
+    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
+    global_shuffled = add_mode(global_shuffled, MODE_CODE["cv"])
+
+    # Find mask of plants for fold
     plants = x[0]["plant"][:, 0, 0]
     fold_mask = (plants == fold_idx)
     fold_mask = jnp.any(fold_mask, axis=0)
     fold_mask = jax.lax.cond(train, lambda v: jnp.logical_not(v), lambda v: v, fold_mask)
     fold_mask = jnp.reshape(fold_mask, (-1, 1))
 
-    # fold_mask = fold_mask.astype(int)
-
     def x_help(fold_mask, shape):
         extra_dims = (np.arange(len(shape) - 2) + 1) * -1
         reshape = jnp.expand_dims(fold_mask, axis=extra_dims)
         return reshape
 
-    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
-    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
-    global_shuffled = add_mode(global_shuffled, MODE_CODE["cv"])
     global_shuffled = tree_map(lambda n: n * x_help(fold_mask, n.shape), global_shuffled)
     global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
-
     return global_batched
 
 @jax.pmap
@@ -159,6 +178,9 @@ class Prefetch_dev:
         for f in FOLDS:
             pf = jnp.reshape(jnp.array(f), (4, 1))
             fold_mask = fold_extract(global_explode, zero_mask, pf, self.train)
+            if not self.train:
+                # If not training add KN
+                fold_mask = add_kn(fold_mask)
             cvs.append(fold_mask)
         return (g_v, *cvs, local_vec)
 
