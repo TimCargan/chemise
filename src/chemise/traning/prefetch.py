@@ -63,6 +63,12 @@ def extract(x, rmask):
     return global_batched
 
 
+MODE_CODE = {"pass": 0, "local": 1, "global": 2, "cv": 3, "kn": 4, "global++": 5}
+def add_mode(xys, mode):
+    xs = xys[0]
+    xs["mode"] = jnp.where(xys[0]["plant"] == 0, 0, mode)
+    return (xs, *xys[1:])
+
 @partial(jax.pmap, in_axes=(0, 0, None, None))
 def fold_extract(x, rmask, fold_idx, train):
     plants = x[0]["plant"][:, 0, 0]
@@ -80,16 +86,18 @@ def fold_extract(x, rmask, fold_idx, train):
 
     r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
     global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
+    global_shuffled = add_mode(global_shuffled, MODE_CODE["cv"])
     global_shuffled = tree_map(lambda n: n * x_help(fold_mask, n.shape), global_shuffled)
     global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
 
     return global_batched
 
-
 @jax.pmap
 def extract_tree(xys):
     local = tree_map(lambda l: rearrange(l, "(b s) ... -> b s ...", s=64), xys)
+    local = add_mode(local, MODE_CODE["local"])
     glob = tree_map(lambda x: rearrange(x, "b p ... -> (p b) 1 ..."), xys)
+    glob = add_mode(glob, MODE_CODE["global"])
     return local, glob
 
 
