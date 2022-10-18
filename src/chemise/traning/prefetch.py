@@ -8,9 +8,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
+from absl import flags
 from absl import logging
 from einops import rearrange
 from jax.tree_util import tree_map
+
+flags.DEFINE_boolean("inc_local", default=True, help="Include Local Vector")
+flags.DEFINE_boolean("inc_globcv", default=True, help="Include Local Vector")
+
+FLAGS = flags.FLAGS
 
 FOLDS = [[1190, 1395, 1005, 17314],
          [458, 471, 918, 212],
@@ -172,17 +178,25 @@ class Prefetch_dev:
 
     def unbatch(self, xys):
         local_vec, global_explode = extract_tree(xys)
-        zero_mask = global_explode[-1][:, :, 0, 0]
-        g_v = extract(global_explode, zero_mask)
-        cvs = []
-        for f in FOLDS:
-            pf = jnp.reshape(jnp.array(f), (4, 1))
-            fold_mask = fold_extract(global_explode, zero_mask, pf, self.train)
-            if not self.train:
-                # If not training add KN
-                fold_mask = add_kn(fold_mask)
-            cvs.append(fold_mask)
-        return (g_v, *cvs, local_vec)
+        ret = ()
+        if FLAGS.inc_local:
+            ret = (local_vec,)
+        if FLAGS.inc_globcv:
+            # Global shape
+            zero_mask = global_explode[-1][:, :, 0, 0]
+            g_v = extract(global_explode, zero_mask)
+            # CV and KN extract
+            cvs = []
+            for f in FOLDS:
+                pf = jnp.reshape(jnp.array(f), (4, 1))
+                fold_mask = fold_extract(global_explode, zero_mask, pf, self.train)
+                if not self.train:
+                    # If not training add KN
+                    fold_mask = add_kn(fold_mask)
+                cvs.append(fold_mask)
+
+                ret = (g_v, *cvs, *ret)
+        return ret
 
     def iter(self, batch_dims:int = 1):
         queue = collections.deque()
