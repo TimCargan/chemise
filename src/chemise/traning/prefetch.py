@@ -1,6 +1,7 @@
 import collections
 import itertools
 import queue
+import random
 from functools import partial
 from threading import Thread
 
@@ -62,9 +63,10 @@ def make_vec_list(data):
     output = [tree.unflatten(leaves) for leaves in sliced]
     return output
 
-@jax.pmap
-def extract(x, rmask):
-    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
+@partial(jax.pmap, in_axes=(0,0,None))
+def extract(x, rmask, c):
+    key = jax.random.fold_in(jax.random.PRNGKey(0), c)
+    r = jax.random.permutation(key, rmask.shape[0])
     global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
     global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
     return global_batched
@@ -94,10 +96,11 @@ def add_kn(xys):
     cv_kn = stack_els([xys, kn_extract])
     return cv_kn
 
-@partial(jax.pmap, in_axes=(0, 0, None, None))
-def fold_extract(x, rmask, fold_idx, train):
+@partial(jax.pmap, in_axes=(0, 0, None, None, None))
+def fold_extract(x, rmask, fold_idx, train, c):
     # Extract and shuffle data
-    r = jax.random.permutation(jax.random.PRNGKey(0), rmask.shape[0])
+    key = jax.random.fold_in(jax.random.PRNGKey(0), c)
+    r = jax.random.permutation(key, rmask.shape[0])
     global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
     global_shuffled = add_mode(global_shuffled, MODE_CODE["cv"])
 
@@ -176,7 +179,7 @@ class Prefetch_dev:
             return t
         self.unpack = unpack
 
-    def unbatch(self, xys):
+    def unbatch(self, xys, c):
         local_vec, global_explode = extract_tree(xys)
         ret = ()
         if FLAGS.inc_local:
@@ -185,12 +188,12 @@ class Prefetch_dev:
         if FLAGS.inc_globcv:
             # Global shape
             zero_mask = global_explode[-1][:, :, 0, 0]
-            g_v = extract(global_explode, zero_mask)
+            g_v = extract(global_explode, zero_mask, c)
             # CV and KN extract
             cvs = []
             for f in FOLDS:
                 pf = jnp.reshape(jnp.array(f), (4, 1))
-                fold_mask = fold_extract(global_explode, zero_mask, pf, self.train)
+                fold_mask = fold_extract(global_explode, zero_mask, pf, self.train, c)
                 if not self.train:
                     # If not training add KN
                     fold_mask = add_kn(fold_mask)
@@ -228,10 +231,12 @@ class Prefetch_dev:
                         queue.append(_prefetch([el], devices[: 1]))
 
         enqueue(self.buffer_size)  # Fill up the buffer, less the first already in.
+        c = random.randint(-100, 100)
         while queue:
             el = queue.popleft()
             tree = self.unpack(el)
-            ub = self.unbatch(tree)
+            ub = self.unbatch(tree, c)
+            c = c + 1
             batches = make_vec_list(ub)
             logging.log_every_n(logging.DEBUG, "un-batched data", 5)
             for b in batches:
