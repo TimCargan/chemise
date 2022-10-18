@@ -181,6 +181,7 @@ class Prefetch_dev:
         ret = ()
         if FLAGS.inc_local:
             ret = (local_vec,)
+
         if FLAGS.inc_globcv:
             # Global shape
             zero_mask = global_explode[-1][:, :, 0, 0]
@@ -194,8 +195,7 @@ class Prefetch_dev:
                     # If not training add KN
                     fold_mask = add_kn(fold_mask)
                 cvs.append(fold_mask)
-
-                ret = (g_v, *cvs, *ret)
+            ret = (g_v, *cvs, *ret)
         return ret
 
     def iter(self, batch_dims:int = 1):
