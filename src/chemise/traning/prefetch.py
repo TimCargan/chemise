@@ -16,6 +16,8 @@ from jax.tree_util import tree_map
 
 flags.DEFINE_boolean("inc_local", default=True, help="Include Local Vector")
 flags.DEFINE_boolean("inc_globcv", default=True, help="Include Local Vector")
+flags.DEFINE_boolean("on_dev_unbatch", default=False, help="Ammortize data load costs and unbatch on device,"
+                                                           " only works with vector runners and is hacky")
 
 FLAGS = flags.FLAGS
 
@@ -235,13 +237,15 @@ class Prefetch_dev:
         while queue:
             el = queue.popleft()
             tree = self.unpack(el)
-            ub = self.unbatch(tree, c)
-            c = c + 1
-            batches = make_vec_list(ub)
-            logging.log_every_n(logging.DEBUG, "un-batched data", 5)
-            for b in batches:
-                yield b
-            # yield tree
+            if FLAGS.on_dev_unbatch:
+                ub = self.unbatch(tree, c)
+                c = c + 1
+                batches = make_vec_list(ub)
+                logging.log_every_n(logging.DEBUG, "un-batched data", 5)
+                for b in batches:
+                    yield b
+            else:
+                yield tree
             enqueue(1)
 
 
