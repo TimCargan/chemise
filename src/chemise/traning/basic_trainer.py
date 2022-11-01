@@ -78,6 +78,7 @@ def _sanity_check(data: Batch):
     :param data:
     :return: bool - True if all values different, dict - input keys and a bool set to True if value is all the same
     """
+    data = jax.device_put(data)
     r_inputs, inputs = _sanity_error(data[0])
     inputs = {f"I_{k}": np.reshape(data[0][k], (-1,))[..., 0] for k, v in inputs.items() if v}
     r_labels, labels = _sanity_error(data[1])
