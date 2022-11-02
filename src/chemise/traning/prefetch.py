@@ -3,7 +3,6 @@ import itertools
 import queue
 import random
 from functools import partial
-from threading import Thread
 
 import jax
 import jax.numpy as jnp
@@ -131,13 +130,13 @@ def extract_tree(xys):
     return local, glob
 
 
-class Prefetch_dev:
+class Prefetch:
     """
     Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
     """
 
     def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1, train: bool=True):
-        super(Prefetch_dev, self).__init__()
+        super(Prefetch, self).__init__()
         self.train = train
         self.data_ds = data
         self.q = queue.Queue(buffer_size)
@@ -247,32 +246,6 @@ class Prefetch_dev:
             else:
                 yield tree
             enqueue(1)
-
-
-class Prefetch(Thread):
-    """
-    Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
-    """
-
-    def __init__(self, data: iter, buffer_size: int = 3):
-        super(Prefetch, self).__init__()
-        self.data = data
-        self.q = queue.Queue(buffer_size)
-
-    def run(self):
-        for data in self.data:
-            self.q.put(data)
-        self.q.put(None)
-
-    def __iter__(self):
-        self.start()
-        return self
-
-    def __next__(self):
-        if data := self.q.get():
-            self.q.task_done()
-            return data
-        raise StopIteration
 
 
 def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
