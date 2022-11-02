@@ -19,7 +19,7 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import get_batch_size, Prefetch_dev
+from chemise.traning.prefetch import get_batch_size, Prefetch
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
@@ -264,7 +264,7 @@ class BasicTrainer:
         leaves = self._slice(leaves, s)
         return treedef.unflatten(leaves)
 
-    def _stateful_step_runner(self, data: Prefetch_dev, step_fn: P_Func, hist: list, callback: StepCallback,
+    def _stateful_step_runner(self, data: Prefetch, step_fn: P_Func, hist: list, callback: StepCallback,
                               training: bool = True) -> None:
         """
         A standard step call, helpful to reduce code in the main train loops
@@ -384,8 +384,8 @@ class BasicTrainer:
         duration = seconds_pretty(duration)
         logging.info(f"Setup complete took: {duration}")
 
-        train_data_iter = Prefetch_dev(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=True)
-        val_data_iter = Prefetch_dev(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=False) if val_data else None
+        train_data_iter = Prefetch(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=True)
+        val_data_iter = Prefetch(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=False) if val_data else None
 
         for e in range(self.num_epochs):
             logging.debug("Starting epoch %d", e)
@@ -447,7 +447,7 @@ class BasicTrainer:
         """
         # data = add_device_batch(data)
         d_iter = data
-        prefetch = Prefetch_dev(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False)
+        prefetch = Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False)
         d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
