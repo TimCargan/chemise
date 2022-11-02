@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Tuple
+from typing import Tuple
 
 import jax
 import jax.numpy as jnp
@@ -16,15 +16,9 @@ from jaxtyping import Num, Array
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.traning import BasicTrainer
+from chemise.traning.basic_trainer import Batch, Rand_Dict, State_Result, Features, Result
 
 FLAGS = flags.FLAGS
-
-Result = dict[str, Num[Array, ""]]
-State_Result = Tuple[TrainState, Result]
-Features = dict[str, Num[Array, "..."]]
-Batch = Tuple[Features, Features]
-Rand_Dict = dict[str, jax.random.PRNGKeyArray]
-P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
 
 @dataclass(unsafe_hash=True)
