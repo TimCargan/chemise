@@ -101,6 +101,10 @@ def no_metrics_fn(y, y_hat):
     return {}
 
 
+def no_on_dev_shape(tree, *args) -> list:
+    return [tree]
+
+
 @dataclass(unsafe_hash=True)
 class BasicTrainer:
     """
@@ -117,6 +121,8 @@ class BasicTrainer:
     callbacks: [Callback] = field(default_factory=list, compare=False)
     train_hist: dict[str, list[Any]] = field(default_factory=empty_train_hist, compare=False)
     train_window: Layout = field(default_factory=make_default_layout, compare=False)
+
+    on_dev_shape: Callable[[Batch, int, bool], list[Batch]] = no_on_dev_shape
 
     batch_dims: int = 1
 
@@ -368,7 +374,9 @@ class BasicTrainer:
         if FLAGS.sanity_check:
             logging.debug("Sanity Check load data")
             first_el = self.get_first_el(train_data)
-            sanity_check(first_el)
+            first_el = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), first_el)
+            reshaped = self.on_dev_shape(first_el, 0, False)
+            sanity_check(reshaped[0])
 
         con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
         live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
@@ -384,8 +392,10 @@ class BasicTrainer:
         duration = seconds_pretty(duration)
         logging.info(f"Setup complete took: {duration}")
 
-        train_data_iter = Prefetch(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=True)
-        val_data_iter = Prefetch(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims, train=False) if val_data else None
+        train_data_iter = Prefetch(train_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims,
+                                   train=True, on_dev_shape=self.on_dev_shape)
+        val_data_iter = Prefetch(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims,
+                                 train=False, on_dev_shape=self.on_dev_shape) if val_data else None
 
         for e in range(self.num_epochs):
             logging.debug("Starting epoch %d", e)
@@ -447,7 +457,7 @@ class BasicTrainer:
         """
         # data = add_device_batch(data)
         d_iter = data
-        prefetch = Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False)
+        prefetch = Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False, on_dev_shape=self.on_dev_shape)
         d_iter = prefetch.iter()
         r_state = replicate(self.state)
         raw_rngs = self._make_rngs()
