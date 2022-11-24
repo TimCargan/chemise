@@ -1,208 +1,86 @@
 import collections
 import itertools
-import queue
 import random
+from dataclasses import dataclass
 from functools import partial
+from typing import Callable, Any
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 import tensorflow as tf
-from absl import flags
 from absl import logging
-from einops import rearrange
-from jax.tree_util import tree_map
-
-flags.DEFINE_boolean("inc_local", default=True, help="Include Local Vector")
-flags.DEFINE_boolean("inc_globcv", default=True, help="Include Local Vector")
-flags.DEFINE_boolean("on_dev_unbatch", default=False, help="Ammortize data load costs and unbatch on device,"
-                                                           " only works with vector runners and is hacky")
-
-FLAGS = flags.FLAGS
-
-FOLDS = [[1190, 1395, 1005, 17314],
-         [458, 471, 918, 212],
-         [1467, 56424, 862, 1161],
-         [384, 643, 1007, 56963],
-         [534, 55827, 235, 440]]
-
-# @partial(jax.pmap, in_axes=(0, None), axis_name="batch")
-
-@jax.pmap
-@jax.jit
-def make_vec_list(data):
-    batches = []
-    vecs = []
-    zeros = []
-    for el in data:
-        batch_count = el[-1].shape[0]
-        vec = el[-1].shape[2]
-        batches.append(batch_count)
-        vecs.append(vec)
-        zeros.append(tree_map(jax.jit(lambda n: jnp.zeros_like(n[0])), el))
-
-    def slice(n, i):
-        return n[i]
-    def tree_slice(tree, batch_index):
-        i = tree_map(lambda x: batch_index, tree)
-        return tree_map(slice, tree, i)
-
-    def stack_els(ls):
-        tree = jax.tree_util.tree_structure(ls[0])
-        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
-        stacked = [jnp.concatenate(x, axis=2) for x in flat_n]
-        return jax.tree_util.tree_unflatten(tree, stacked)
-
-    max_batches = max(batches)
-
-    padded = [tree_map(lambda x: jnp.pad(x, [(0, (max_batches - x.shape[0] % max_batches) % max_batches), *[(0, 0)] * len(x.shape[1:])]),
-                el) for el in data]
-    step = stack_els(padded)
-    lefs, tree = jax.tree_util.tree_flatten(step)
-    sliced = [[l[i] for l in lefs] for i in range(max_batches)]
-    output = [tree.unflatten(leaves) for leaves in sliced]
-    return output
-
-@partial(jax.pmap, in_axes=(0,0,None))
-def extract(x, rmask, c):
-    key = jax.random.fold_in(jax.random.PRNGKey(0), c)
-    r = jax.random.permutation(key, rmask.shape[0])
-    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
-    global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
-    return global_batched
 
 
-MODE_CODE = {"pass": 0, "local": 1, "global": 2, "cv": 3, "kn": 4, "global++": 5}
-def add_mode(xys, mode):
-    xs = xys[0]
-    xs["mode"] = jnp.where(xys[0]["plant"] == 0, 0, mode)
-    return (xs, *xys[1:])
-
-@jax.pmap
-def add_kn(xys):
-    def stack_els(ls):
-        tree = jax.tree_util.tree_structure(ls[0])
-        flat = [jax.tree_util.tree_flatten(d)[0] for d in ls]
-        flat_n = [[n[l] for n in flat] for l in range(len(flat[0]))]
-        stacked = [jnp.concatenate(x, axis=0) for x in flat_n]
-        return jax.tree_util.tree_unflatten(tree, stacked)
-    def _add_kn(xs):
-        xs = {k: v for k, v in xs.items()}
-        xs["irradiance_in"] = xs["irradiance_in_kn"]
-        return xs
-
-    kn_extract = (_add_kn(xys[0]), *xys[1:])
-    kn_extract = add_mode(kn_extract, MODE_CODE["kn"])
-    cv_kn = stack_els([xys, kn_extract])
-    return cv_kn
-
-@partial(jax.pmap, in_axes=(0, 0, None, None, None))
-def fold_extract(x, rmask, fold_idx, train, c):
-    # Extract and shuffle data
-    key = jax.random.fold_in(jax.random.PRNGKey(0), c)
-    r = jax.random.permutation(key, rmask.shape[0])
-    global_shuffled = tree_map(jax.jit(lambda n: n[r]), x)
-    global_shuffled = add_mode(global_shuffled, MODE_CODE["cv"])
-
-    # Find mask of plants for fold
-    plants = x[0]["plant"][:, 0, 0]
-    fold_mask = (plants == fold_idx)
-    fold_mask = jnp.any(fold_mask, axis=0)
-    fold_mask = jax.lax.cond(train, lambda v: jnp.logical_not(v), lambda v: v, fold_mask)
-    fold_mask = jnp.reshape(fold_mask, (-1, 1))
-
-    def x_help(fold_mask, shape):
-        extra_dims = (np.arange(len(shape) - 2) + 1) * -1
-        reshape = jnp.expand_dims(fold_mask, axis=extra_dims)
-        return reshape
-
-    global_shuffled = tree_map(lambda n: n * x_help(fold_mask, n.shape), global_shuffled)
-    global_batched = tree_map(jax.jit(lambda n: rearrange(n, "(b s) ... -> b s ...", s=64)), global_shuffled)
-    return global_batched
-
-@jax.pmap
-def extract_tree(xys):
-    local = tree_map(lambda l: rearrange(l, "(b s) ... -> b s ...", s=64), xys)
-    local = add_mode(local, MODE_CODE["local"])
-    glob = tree_map(lambda x: rearrange(x, "b p ... -> (p b) 1 ..."), xys)
-    glob = add_mode(glob, MODE_CODE["global"])
-    return local, glob
-
-
-class Prefetch:
+@dataclass(unsafe_hash=True)
+class Packer:
     """
-    Wrap an iterator with a thead to load and prefetch onto the GPU(s) in a no-blocking way
+    Pack and unpack data to minimise the number of H2D calls, can be helpfully if there are a lot of small input feats
     """
-
-    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims:int = 1, train: bool=True):
-        super(Prefetch, self).__init__()
-        self.train = train
-        self.data_ds = data
-        self.q = queue.Queue(buffer_size)
-        self.buffer_size = buffer_size
-        platform = jax.default_backend()
-        d_count = jax.device_count(platform)
-        logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
-
-        devices = jax.local_devices()
-
-        first = self.data_ds.element_spec
-        batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
-        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", len(devices),
-                      len(devices), ", ".join(str(i) for i in batch_dim_size))
-
-        # Cacluate node sizes
+    def __init__(self, first):
+        # Calculate node sizes
         shapes = jax.tree_util.tree_map(lambda x: np.array((*x.shape, sum(bytes(str(x.dtype), 'utf-8')))), first)
-        leave, tree_struct = jax.tree_util.tree_flatten(shapes)
+        leave, self.tree_struct = jax.tree_util.tree_flatten(shapes)
+
         sizes = collections.defaultdict(list)
+        self.sizes = sizes
+
         for i, s in enumerate(leave):
             sizes[(*s,)].append(i)
 
         un_pack_idx = [i for dim, idx in sizes.items() for i in idx]
-        un_pack_lookups = {v: i for i, v in enumerate(un_pack_idx)}
+        self.un_pack_lookups = {v: i for i, v in enumerate(un_pack_idx)}
 
-        # pack numpy arrays to minimise number of H2D ops
-        def pack_tree(*t):
-            flat, _ = jax.tree_util.tree_flatten(t)
-            # flat = [tf.cast(f, tf.float32) if f.dtype == tf.int32 or f.dtype == tf.int64 else f for f in flat]
-            packed = [tf.stack([flat[i] for i in idx]) for dim, idx in sizes.items()]
-            return packed
+    def pack(self, *t):
+        """
+        pack numpy arrays to minimise number of H2D ops
+        :param t: tree to pack
+        :return: 
+        """""
+        flat, _ = jax.tree_util.tree_flatten(t)
+        packed = [tf.stack([flat[i] for i in idx]) for dim, idx in self.sizes.items()]
+        return packed
 
-        self.data = self.data_ds.map(pack_tree, num_parallel_calls=tf.data.AUTOTUNE)
+    @partial(jax.pmap, static_broadcasted_argnums=(0,))
+    def unpack(self, stacked):
+        """
+        Take a tree packed using the pack function and unpack it
+        :param stacked:
+        :return:
+        """
+        unorder = [stacked[i][si] for i, idxs in enumerate(self.sizes.values()) for si, ti in enumerate(idxs)]
+        order = [unorder[self.un_pack_lookups[i]] for i in range(len(unorder))]
+        t = jax.tree_util.tree_unflatten(self.tree_struct, order)
+        return t
 
-        @jax.pmap
-        @jax.jit
-        def unpack(stacked):
-            unorder = [stacked[i][si] for i, idxs in enumerate(sizes.values()) for si, ti in enumerate(idxs)]
-            order = [unorder[un_pack_lookups[i]] for i in range(len(unorder))]
-            t = jax.tree_util.tree_unflatten(tree_struct, order)
-            return t
-        self.unpack = unpack
 
-    def unbatch(self, xys, c):
-        local_vec, global_explode = extract_tree(xys)
-        ret = ()
-        if FLAGS.inc_local:
-            ret = (local_vec,)
 
-        if FLAGS.inc_globcv:
-            # Global shape
-            zero_mask = global_explode[-1][:, :, 0, 0]
-            g_v = extract(global_explode, zero_mask, c)
-            # CV and KN extract
-            cvs = []
-            for f in FOLDS:
-                pf = jnp.reshape(jnp.array(f), (4, 1))
-                fold_mask = fold_extract(global_explode, zero_mask, pf, self.train, c)
-                if not self.train:
-                    # If not training add KN
-                    fold_mask = add_kn(fold_mask)
-                cvs.append(fold_mask)
-            ret = (g_v, *cvs, *ret)
-        return ret
 
-    def iter(self, batch_dims:int = 1):
+class Prefetch:
+    """
+    Prefetch onto the GPU(s), data is compacted to reduce the number of H2D ops
+    """
+    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims: int = 1, train: bool = True,
+                 on_dev_shape: Callable[[Any, int, bool], list[Any]] = None):
+        super(Prefetch, self).__init__()
+        self.train = train
+        self.data_ds = data
+        self.buffer_size = buffer_size
+        self.on_dev_shape = on_dev_shape
+        assert on_dev_shape is not None, "Must have an on dev shape function"
+
+        first = self.data_ds.element_spec
+        self.packer = Packer(first)
+        self.data = self.data_ds.map(self.packer.pack, num_parallel_calls=tf.data.AUTOTUNE)
+
+        batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
+        platform = jax.default_backend()
+        d_count = jax.device_count(platform)
+
+        logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
+        logging.debug("Sharded prefetch to %d devices, assumed new batch shape [%d, %s, ...]", d_count,
+                      d_count, ", ".join(str(i) for i in batch_dim_size))
+
+    def iter(self, batch_dims: int = 1):
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
@@ -235,16 +113,10 @@ class Prefetch:
         c = random.randint(-100, 100)
         while queue:
             el = queue.popleft()
-            tree = self.unpack(el)
-            if FLAGS.on_dev_unbatch:
-                ub = self.unbatch(tree, c)
-                c = c + 1
-                batches = make_vec_list(ub)
-                logging.log_every_n(logging.DEBUG, "un-batched data", 5)
-                for b in batches:
-                    yield b
-            else:
-                yield tree
+            el = self.packer.unpack(el)
+            els = self.on_dev_shape(el, c, self.train)
+            for el in els:
+                yield el
             enqueue(1)
 
 
