@@ -13,15 +13,18 @@ class MLP(nn.Module):
     width: int
     activation: Callable[[Num[Array, "..."]], Num[Array, "..."]] = nn.relu
     key: str = None
+    dropout_rate: float = 0.
 
     @nn.compact
-    def __call__(self, x: Num[Array, "..."]) -> Num[Array, "..."]:
+    def __call__(self, x: Num[Array, "..."], deterministic=True) -> Num[Array, "..."]:
         if self.key:
             x = x[self.key]
 
         for d in range(self.depth):
             x = nn.Dense(self.width)(x)
+            x = nn.Dropout(self.dropout_rate)(x, deterministic=deterministic)
             x = self.activation(x)
+
         return x
 
 
