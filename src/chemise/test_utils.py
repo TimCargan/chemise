@@ -1,7 +1,8 @@
+import jax.numpy as jnp
+import jax.test_util
 import numpy as np
 from absl.testing import parameterized
-import jax.test_util
-import jax.numpy as jnp
+
 import utils
 
 # Parse absl flags test_srcdir and test_tmpdir.
@@ -51,3 +52,23 @@ class BasicTrainerHelpersTests(parameterized.TestCase):
         self.assertIn("loss", red)
         self.assertListEqual(list(range(10)), red["loss"])
         self.assertEmpty(utils.list_dict_to_dict_list([]))
+
+    @parameterized.parameters(
+        (1, (32, 10,), 32),
+        (2, (32, 2, 10,), 64),
+        (2, (2, 32, 10,), 64),
+        (3, (32, 2, 10,), 640),
+    )
+    def test_get_batch_size(self, nb_dims, shape, size):
+        self.assertEqual(size, utils.get_batch_size(jnp.zeros(shape), batch_dims=nb_dims))
+
+    @parameterized.parameters(
+        (1, (32, 10,), (32,)),
+        (2, (32, 2, 10,), (32, 2,)),
+        (2, (2, 32, 10,), (2, 32,)),
+        (3, (32, 2, 10,), (32, 2, 10,)),
+    )
+    def test_get_batch_dims(self, nb_dims, shape, ex_dims):
+        dims = utils.get_batch_dims(jnp.zeros(shape), batch_dims=nb_dims)
+        self.assertEqual(nb_dims, len(dims))
+        self.assertEqual(ex_dims, dims)
