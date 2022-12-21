@@ -19,8 +19,8 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import get_batch_size, Prefetch
-from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty
+from chemise.traning.prefetch import Prefetch
+from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
