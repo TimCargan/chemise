@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax
 import numpy as np
 
 
@@ -81,3 +82,29 @@ def datasetspec_to_zero(ds, batch_size: int = None, force_size: bool = False):
     shape = ds.shape
     shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
     return np.zeros(shape=shape, dtype=ds.dtype.as_numpy_dtype)
+
+
+def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
+    """
+    Get the likely batch size of a pytree of data
+    :param ds:
+    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
+    if grater than 1 returns the product of the dims
+    :return:
+    """
+    flat, _ = jax.tree_util.tree_flatten(ds)
+    shape = np.shape(flat[0])
+    return shape[:batch_dims]
+
+
+def get_batch_size(ds, batch_dims=1) -> int:
+    """
+    Get the likely batch size of a pytree of data
+    :param ds:
+    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
+    if grater than 1 returns the product of the dims
+    :return:
+    """
+    bds = get_batch_dims(ds, batch_dims)
+    batch_size = np.prod(bds)
+    return int(batch_size)

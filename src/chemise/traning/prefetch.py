@@ -10,6 +10,8 @@ import numpy as np
 import tensorflow as tf
 from absl import logging
 
+from chemise.utils import get_batch_dims
+
 
 @dataclass(unsafe_hash=True)
 class Packer:
@@ -66,7 +68,7 @@ class Prefetch:
         self.data_ds = data
         self.buffer_size = buffer_size
         self.on_dev_shape = on_dev_shape
-        assert on_dev_shape is not None, "Must have an on dev shape function"
+        assert on_dev_shape is not None, "Must have an on dev shape function, can just be an ident"
 
         first = self.data_ds.element_spec
         self.packer = Packer(first)
@@ -120,27 +122,3 @@ class Prefetch:
             enqueue(1)
 
 
-def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
-    """
-    Get the likely batch size of a pytree of data
-    :param ds:
-    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
-    if grater than 1 returns the product of the dims
-    :return:
-    """
-    flat, _ = jax.tree_util.tree_flatten(ds)
-    shape = np.shape(flat[0])
-    return shape[:batch_dims]
-
-
-def get_batch_size(ds, batch_dims=1) -> int:
-    """
-    Get the likely batch size of a pytree of data
-    :param ds:
-    :param batch_dims: Number of leading dims to consider part of the batch, default 1,
-    if grater than 1 returns the product of the dims
-    :return:
-    """
-    bds = get_batch_dims(ds, batch_dims)
-    batch_size = np.prod(bds)
-    return int(batch_size)
