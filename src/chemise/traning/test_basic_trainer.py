@@ -87,6 +87,15 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
         self.rnd_in = {k: np.random.random((2,20)) for k in self.keys}
         self.rnd_l = {"l": np.random.random((2,20))}
 
+    def test_non_dict(self):
+        # All bad
+        ds = (self.zero_in, self.zero_l["l"])
+        good, in_dict = basic_trainer._sanity_check(ds)
+        self.assertFalse(good)
+        expect = {"I_a": np.array(0), "I_b": np.array(0), "I_c": np.array(0), "O_l": np.array(0)}
+        self.assertDictEqual(expect, in_dict)
+
+
     def test_all_bad(self):
         # All bad
         ds = (self.zero_in, self.zero_l)

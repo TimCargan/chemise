@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator
 import time
 from dataclasses import dataclass, field
-from functools import partial, reduce
+from functools import partial
 from typing import Callable, Any, Tuple, List, Iterator
 
 import jax
@@ -67,8 +67,8 @@ def _sanity_error(data: Features) -> (bool, dict):
     :param data:
     :return: flag - True if are key has all the same values, dict of keys with v True if all values are the same
     """
-    feats = {f"{k}": jnp.all(v == jnp.reshape(v, (-1))[0], axis=None) for k, v in data.items()}
-    is_good = reduce(operator.or_, feats.values(), False)
+    feats = jax.tree_util.tree_map(lambda v: jnp.all(v == jnp.reshape(v, (-1))[0], axis=None), data)
+    is_good = jax.tree_util.tree_reduce(operator.or_, feats, False)
     return is_good, feats
 
 
@@ -94,7 +94,7 @@ def sanity_check(el: Batch):
         logging.info("Sanity check passed: %s", input_errors)
     else:
         logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
-
+    return pass_sanity, input_errors
 
 @jax.tree_util.Partial
 def no_metrics_fn(y, y_hat):
@@ -164,7 +164,7 @@ class BasicTrainer:
         # _fold_in_static LazyRng.create(v, mixin).as_jax_rng()
         return {k: jax.random.fold_in(v, mixin) for k, v in key_dict.items()}
 
-    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
+    def _step(self, params, batch: Batch, rngs: Rand_Dict = None, train: bool = True, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
@@ -175,23 +175,24 @@ class BasicTrainer:
         y = batch[1]
         mask = s[0] if (s := batch[3:4]) else True
 
-        y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs)
+        y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs, train=train)
         p_loss = self.loss_fn(y, y_pred)
         p_loss = jnp.where(mask, p_loss, 0.0)  # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _j_step(self, params, batch: Batch, rngs: Rand_Dict = None, global_batch: int = 1):
+    @partial(jax.jit, static_argnums=(0,), static_argnames=("train",))
+    def _j_step(self, params, batch: Batch, rngs: Rand_Dict = None, train: bool=True, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
             :param params: params of model
             :return: [Loss, predictions]
             """
-        return self._step(params, batch, rngs, global_batch)
+        return self._step(params, batch, rngs, train, global_batch)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    # @partial(jax.vmap, in_axis=(None,0 , 0, 0), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step. This has a pmap so will use all GPUs
@@ -217,7 +218,7 @@ class BasicTrainer:
         rngs = self._rngs_mix(rngs, state.step)
 
         step = jax.value_and_grad(self._j_step, has_aux=True)
-        (loss, y_pred), grads = step(state.params, batch, rngs, GLOBAL_BATCH)
+        (loss, y_pred), grads = step(state.params, batch, rngs, train=True, global_batch=GLOBAL_BATCH)
         grads = jax.lax.psum(grads, axis_name="batch")
         state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
@@ -474,6 +475,16 @@ class BasicTrainer:
 
             yield self.p_apply_step(_r_state, batch, _rngs, c)
             c += 1
+
+    def __call__(self, x, **kwargs):
+        """
+        Stateful call to run the model. This is not an efficient way to use the mode but can be helpful for debugging.
+        :param x: data to pass to the model
+        :param kwargs: other arguments to pass to the model
+        :return:
+        """
+        rngs = self._make_rngs()
+        return self.state.apply_fn({'params': self.state.params}, x, rngs=rngs, train=False, **kwargs)
 
     def reset(self):
         """
