@@ -72,16 +72,12 @@ def datasetspec_to_zero(ds, batch_size: int = None, force_size: bool = False):
     :param force_size: Overwrite the batch size
     :return:
     """
-    if isinstance(ds, tuple):
-        return tuple(datasetspec_to_zero(el, batch_size=batch_size) for el in ds)
+    def make_zero(el):
+        shape = el.shape
+        shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
+        return np.zeros(shape=shape, dtype=el.dtype.as_numpy_dtype)
 
-    if isinstance(ds, dict):
-        return {k: datasetspec_to_zero(v, batch_size=batch_size) for k, v in ds.items()}
-
-    # Replace batch size if None
-    shape = ds.shape
-    shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
-    return np.zeros(shape=shape, dtype=ds.dtype.as_numpy_dtype)
+    return jax.tree_util.tree_map(make_zero, ds)
 
 
 def get_batch_dims(ds, batch_dims=1) -> tuple[int]:
