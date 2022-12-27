@@ -314,6 +314,7 @@ class BasicTrainer:
                 step += 1
                 callback.step_end_cb(self)
 
+        self.state = unreplicate(r_state)
         callback.end_cb(self)
 
     @staticmethod
