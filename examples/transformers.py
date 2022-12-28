@@ -114,7 +114,7 @@ def make_data(size: int, cats: int = 10, seq_len: int = 16) -> tf.data.Dataset:
 
 
 def make_model(zeros) -> BasicTrainer:
-    m = TransfomerModel(model_dim=32, num_classes=11, num_heads=2, num_layers=2, dropout_prob=0.0)
+    m = TransfomerModel(model_dim=64, num_classes=129, num_heads=4, num_layers=2, dropout_prob=0.0)
     rng = jax.random.PRNGKey(0)
 
     rng, lstm_rng, dropout, init_rng = jax.random.split(rng, num=4)
@@ -124,10 +124,10 @@ def make_model(zeros) -> BasicTrainer:
 
     lr_schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
-        peak_value=1e-3,
+        peak_value=1e-2,
         warmup_steps=100,
-        decay_steps=30 * 20_000 // 64,
-        end_value=0.0
+        decay_steps=30 * 20_000 // 32,
+        end_value=1e-6
     )
     tx = optax.chain(
         optax.clip_by_global_norm(1.0),  # Clip gradients at norm 1
@@ -141,8 +141,8 @@ def make_model(zeros) -> BasicTrainer:
 
 def main(argv):
     # Make some data
-    train = make_data(20_000, seq_len=32).batch(32, drop_remainder=True)
-    test = make_data(500, seq_len=32).batch(32, drop_remainder=True)
+    train = make_data(20_000, cats=128, seq_len=32).batch(32, drop_remainder=True)
+    test = make_data(500, cats=128, seq_len=32).batch(32, drop_remainder=True)
 
     # Make the model and init the weights with 0s
     zeros = datasetspec_to_zero(train.element_spec, batch_size=16)
