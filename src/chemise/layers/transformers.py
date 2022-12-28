@@ -67,10 +67,11 @@ class TransformerEncoder(nn.Module):
             # Make the encoder block
             encb = EncoderBlock(self.input_dim, self.num_heads, self.dim_feedforward, self.dropout_prob)
             # Apply it with a skip connection
-            x = skip_x + x if self.skip else x
-            skip_x = x # Save for next cycle
-            x = nn.LayerNorm()(x)
+            # x = skip_x + x if self.skip else x
+            # skip_x = x # Save for next cycle
+
             x = encb(x, mask=mask, train=train)
+            x = nn.LayerNorm()(x)
 
 
         return x
