@@ -291,7 +291,7 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_num=step):
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=step-1):
                 if not (batch := next(d_iter, None)):
                     break
 
