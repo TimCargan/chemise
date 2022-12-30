@@ -10,9 +10,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from absl import logging, flags
-from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-from chemise.traning.prefetch import Prefetch
-from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
 from jaxtyping import Num, Array, Bool
@@ -20,6 +17,10 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
+
+from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
+from chemise.traning.prefetch import Prefetch
+from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
@@ -304,7 +305,7 @@ class BasicTrainer:
                 r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
-                metrics = r_metrics # unreplicate(r_metrics)
+                metrics = unreplicate(r_metrics)
 
                 # re-broadcast state if needed
                 r_state = r_state if s == dev_batch_size else replicate(unreplicate(r_state))
