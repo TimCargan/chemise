@@ -305,17 +305,16 @@ class BasicTrainer:
                 r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
-                metrics = unreplicate(r_metrics)
+                self.state, metrics = unreplicate((r_state, r_metrics))
 
                 # re-broadcast state if needed
-                r_state = r_state if s == dev_batch_size else replicate(unreplicate(r_state))
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
 
                 # Update metrics
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
 
-        self.state = unreplicate(r_state)
         callback.end_cb(self)
 
     @staticmethod

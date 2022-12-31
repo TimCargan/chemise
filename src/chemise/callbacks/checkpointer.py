@@ -32,7 +32,7 @@ class Checkpointer(Callback):
 
     def on_train_batch_end(self, trainer: BasicTrainer):
         self.train_c += 1
-        if self.intra_train_freq and self.train_c % self.intra_train_freq:
+        if self.intra_train_freq and self.train_c % self.intra_train_freq == 0:
             cp.save_checkpoint(target=trainer.state, step=trainer.state.step,
                                ckpt_dir=self.ckpt_dir, overwrite=self.overwrite,
                                keep=self.keep, keep_every_n_steps=self.keep_every_n_steps)
