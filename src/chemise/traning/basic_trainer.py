@@ -130,6 +130,9 @@ class BasicTrainer:
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
 
+    # Used for profiling
+    _group_id: int = 0
+
     def __post_init__(self):
         self._next_prng = jax.random.PRNGKey(self.seed)
 
@@ -292,7 +295,7 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=step-1):
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=self._group_id):
                 if not (batch := next(d_iter, None)):
                     break
 
@@ -305,17 +308,16 @@ class BasicTrainer:
                 r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
                 # Un-replicate so callbacks and metrics work
-                metrics = unreplicate(r_metrics)
+                self.state, metrics = unreplicate((r_state, r_metrics))
 
                 # re-broadcast state if needed
-                r_state = r_state if s == dev_batch_size else replicate(unreplicate(r_state))
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
 
                 # Update metrics
                 hist.append(metrics)
                 step += 1
                 callback.step_end_cb(self)
 
-        self.state = unreplicate(r_state)
         callback.end_cb(self)
 
     @staticmethod
