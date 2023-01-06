@@ -292,28 +292,28 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=step-1):
-                if not (batch := next(d_iter, None)):
-                    break
 
-                # Slice state and RNGs as needed if dev_batch is less than number of devs
-                s = get_batch_size(batch)
-                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
-                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+            if not (batch := next(d_iter, None)):
+                break
 
-                # Run step
-                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+            # Slice state and RNGs as needed if dev_batch is less than number of devs
+            s = get_batch_size(batch)
+            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-                # Un-replicate so callbacks and metrics work
-                self.state, metrics = unreplicate((r_state, r_metrics))
+            # Run step
+            r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
-                # re-broadcast state if needed
-                r_state = r_state if s == dev_batch_size else replicate(self.state)
+            # Un-replicate so callbacks and metrics work
+            self.state, metrics = unreplicate((r_state, r_metrics))
 
-                # Update metrics
-                hist.append(metrics)
-                step += 1
-                callback.step_end_cb(self)
+            # re-broadcast state if needed
+            r_state = r_state if s == dev_batch_size else replicate(self.state)
+
+            # Update metrics
+            hist.append(metrics)
+            step += 1
+            callback.step_end_cb(self)
 
         callback.end_cb(self)
 
