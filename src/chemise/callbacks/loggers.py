@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import mlflow
 from absl import flags
-from einops import reduce
 
 from chemise.callbacks.abc_callback import Callback
 # from chemise.traning import BasicTrainer
@@ -26,7 +25,7 @@ class Mlflow(Callback):
             met = trainer.train_hist["epochs"][-1]["train"][-self.update_metric_freq:]
             # Swap dict of list and then reduce mean
             met = list_dict_to_dict_list(met)
-            met = {k: float(reduce(jnp.stack(v, axis=0), "... -> (...)", "mean")) for k, v in met.items()}
+            met = {k: float(jnp.nanmean(jnp.stack(v, axis=0))) for k, v in met.items()}
             mlflow.log_metrics(met, step=self._step_count)
         self._step_count += 1
 
