@@ -8,10 +8,12 @@ from typing import Callable, Any
 import jax
 import numpy as np
 import tensorflow as tf
-from absl import logging
+from absl import logging, flags
 
 from chemise.utils import get_batch_dims
 
+flags.DEFINE_boolean("prefetch_pack", default=True, help="Pack items when prefetch to reduce number of H2D mem-copy calls")
+FLAGS = flags.FLAGS
 
 @dataclass(unsafe_hash=True)
 class Packer:
@@ -65,14 +67,14 @@ class Prefetch:
                  on_dev_shape: Callable[[Any, int, bool], list[Any]] = None):
         super(Prefetch, self).__init__()
         self.train = train
-        self.data_ds = data
+        self.data_raw = data
         self.buffer_size = buffer_size
         self.on_dev_shape = on_dev_shape
         assert on_dev_shape is not None, "Must have an on dev shape function, can just be an ident"
 
-        first = self.data_ds.element_spec
+        first = self.data_raw.element_spec
         self.packer = Packer(first)
-        self.data = self.data_ds.map(self.packer.pack, num_parallel_calls=tf.data.AUTOTUNE)
+        self.data_packed = self.data_raw.map(self.packer.pack, num_parallel_calls=tf.data.AUTOTUNE)
 
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         platform = jax.default_backend()
@@ -86,7 +88,8 @@ class Prefetch:
         queue = collections.deque()
         devices = jax.local_devices()
         dev_count = len(devices)
-        data_iter = self.data.as_numpy_iterator()
+        data_iter = self.data_packed if FLAGS.prefetch_pack else self.data_raw
+        data_iter = data_iter.as_numpy_iterator()
 
         def _prefetch(data, devs):
             # Send H2D
@@ -115,7 +118,7 @@ class Prefetch:
         c = random.randint(-100, 100)
         while queue:
             el = queue.popleft()
-            el = self.packer.unpack(el)
+            el = self.packer.unpack(el) if FLAGS.prefetch_pack else el
             els = self.on_dev_shape(el, c, self.train)
             for el in els:
                 yield el
