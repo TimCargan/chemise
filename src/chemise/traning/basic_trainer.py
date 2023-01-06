@@ -96,6 +96,7 @@ def sanity_check(el: Batch):
         logging.warning("Sanity check failed, The following keys all have the same value: %s", input_errors)
     return pass_sanity, input_errors
 
+
 @jax.tree_util.Partial
 def no_metrics_fn(y, y_hat):
     return {}
@@ -185,7 +186,7 @@ class BasicTrainer:
         return loss, y_pred
 
     @partial(jax.jit, static_argnums=(0,), static_argnames=("train",))
-    def _j_step(self, params, batch: Batch, rngs: Rand_Dict = None, train: bool=True, global_batch: int = 1):
+    def _j_step(self, params, batch: Batch, rngs: Rand_Dict = None, train: bool = True, global_batch: int = 1):
         """
             Run a single step and calculate the loss value.
             Here so we only need on trace for train and eval per batch size
@@ -217,7 +218,7 @@ class BasicTrainer:
         x = batch[0]
         y = batch[1]
 
-        GLOBAL_BATCH = get_batch_size(batch, 2)
+        GLOBAL_BATCH = get_batch_size(batch, 1) * jax.device_count()
         rngs = self._rngs_mix(rngs, state.step)
 
         step = jax.value_and_grad(self._j_step, has_aux=True)
@@ -244,22 +245,24 @@ class BasicTrainer:
         _, y_pred = self._j_step(state.params, batch, rngs)
         return (*batch, y_pred)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
-    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), in_axes=(None, 0, 0, 0, None), axis_name="batch")
+    def p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 1) -> State_Result:
         """
         Perform a prediction step and calculate metrics for a given batch
         :param state: model state object
         :param batch: Batch tuple to predict with
         :param rngs: dict of rngs for use in the model
+        :param c: mixin for RNG
         :return: [State, dict metrics]
         """
         return self._p_test_step(state, batch, rngs)
 
-    def _p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
+    def _p_test_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict, c: int = 1) -> State_Result:
         x = batch[0]
         y = batch[1]
 
-        gbs = get_batch_size(batch, 2)
+        rngs = self._rngs_mix(rngs, c)
+        gbs = get_batch_size(batch, 1) * jax.device_count()
         loss, y_pred = self._j_step(state.params, batch, rngs, global_batch=gbs)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
         metrics = jax.lax.pmean(metrics, axis_name='batch')
@@ -295,7 +298,8 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=self._group_id):
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step,
+                                                  group_id=self._group_id):
                 if not (batch := next(d_iter, None)):
                     break
 
@@ -477,6 +481,35 @@ class BasicTrainer:
             _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
             yield self.p_apply_step(_r_state, batch, _rngs, c)
+            c += 1
+
+    def eval_model(self, data: tfd.Dataset):
+        """
+        Map the model over the dataset
+        Transforming it to include predictions
+        :param data: dataset to map over
+        :return: an iterator that yields [X, Y, Y_hat]
+        """
+        # data = add_device_batch(data)
+        d_iter = data
+        prefetch = Prefetch(d_iter, buffer_size=FLAGS.prefetch_buffer, train=False, on_dev_shape=self.on_dev_shape)
+        d_iter = prefetch.iter()
+        r_state = replicate(self.state)
+        raw_rngs = self._make_rngs()
+        rngs = replicate(raw_rngs)
+        dev_batch_size = get_batch_size(r_state)
+        c = 0
+        while True:
+            if not (batch := next(d_iter, None)):
+                break
+
+            s = get_batch_size(batch)
+            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+
+            _, metrics = self.p_test_step(_r_state, batch, _rngs, c)
+            yield metrics
+
             c += 1
 
     def __call__(self, x, **kwargs):
