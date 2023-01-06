@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import orbax.checkpoint as orbax
 from absl import logging
 from flax.training import checkpoints as cp
 
@@ -33,15 +34,17 @@ class Checkpointer(Callback):
     def on_train_batch_end(self, trainer: BasicTrainer):
         self.train_c += 1
         if self.intra_train_freq and self.train_c % self.intra_train_freq == 0:
-            cp.save_checkpoint(target=trainer.state, step=trainer.state.step,
-                               ckpt_dir=self.ckpt_dir, overwrite=self.overwrite,
-                               keep=self.keep, keep_every_n_steps=self.keep_every_n_steps)
+            self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
+        self.save(trainer)
+
+    def save(self, trainer: BasicTrainer):
+        orbax_checkpointer = orbax.Checkpointer(orbax.PyTreeCheckpointHandler())
         cp.save_checkpoint(target=trainer.state, step=trainer.state.step,
                            ckpt_dir=self.ckpt_dir, overwrite=self.overwrite,
-                           keep=self.keep, keep_every_n_steps=self.keep_every_n_steps)
-
+                           keep=self.keep, keep_every_n_steps=self.keep_every_n_steps,
+                           orbax_checkpointer=orbax_checkpointer)
     @staticmethod
     def restore(trainer: BasicTrainer, ckpt_dir: Path | str):
         trainer.state = cp.restore_checkpoint(ckpt_dir=ckpt_dir, target=trainer.state)
