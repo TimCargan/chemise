@@ -130,6 +130,9 @@ class BasicTrainer:
     seed: int = 0
     _next_prng: jax.random.PRNGKeyArray = field(default=None, compare=False)
 
+    # Used for profiling
+    _group_id: int = 0
+
     def __post_init__(self):
         self._next_prng = jax.random.PRNGKey(self.seed)
 
@@ -292,28 +295,28 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=self._group_id):
+                if not (batch := next(d_iter, None)):
+                    break
 
-            if not (batch := next(d_iter, None)):
-                break
+                # Slice state and RNGs as needed if dev_batch is less than number of devs
+                s = get_batch_size(batch)
+                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-            # Slice state and RNGs as needed if dev_batch is less than number of devs
-            s = get_batch_size(batch)
-            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
-            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+                # Run step
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
-            # Run step
-            r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+                # Un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, r_metrics))
 
-            # Un-replicate so callbacks and metrics work
-            self.state, metrics = unreplicate((r_state, r_metrics))
+                # re-broadcast state if needed
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
 
-            # re-broadcast state if needed
-            r_state = r_state if s == dev_batch_size else replicate(self.state)
-
-            # Update metrics
-            hist.append(metrics)
-            step += 1
-            callback.step_end_cb(self)
+                # Update metrics
+                hist.append(metrics)
+                step += 1
+                callback.step_end_cb(self)
 
         callback.end_cb(self)
 
