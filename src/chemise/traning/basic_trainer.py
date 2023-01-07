@@ -395,6 +395,7 @@ class BasicTrainer:
 
         callbacks = CallbackRunner(callbacks=self.callbacks)
         callbacks.on_fit_start(self)
+        callbacks.set_step_number(int(jnp.max(self.state.step)))
 
         duration = time.monotonic() - setup_start_time
         duration = seconds_pretty(duration)

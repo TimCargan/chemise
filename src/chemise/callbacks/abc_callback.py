@@ -5,6 +5,8 @@ from typing import Callable, Any
 CallbackFn = Callable[[Any], None]
 
 class Callback(ABC):
+    def set_step_number(self, step: int):
+        pass
     """
     Abstract base class used to build new callbacks.
     """
@@ -83,6 +85,9 @@ class Callback(ABC):
 
 
 class StepCallback:
+    def set_step_number(self, step: int):
+        pass
+
     def start_cb(self, trainer):
         pass
 
