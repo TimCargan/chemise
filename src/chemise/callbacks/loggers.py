@@ -19,6 +19,8 @@ class Mlflow(Callback):
     # def on_fit_start(self, trainer):
     #     #TOOD: add some checks to make sure there is exper running its here
     #     pass
+    def set_step_number(self, step: int):
+        self._step_count = step
 
     def on_train_batch_end(self, trainer):
         if self._step_count % self.update_metric_freq == 0:

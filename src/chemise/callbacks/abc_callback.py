@@ -8,6 +8,14 @@ class Callback(ABC):
     """
     Abstract base class used to build new callbacks.
     """
+    def set_step_number(self, step: int):
+        """
+        Set the current step number, called once at the beginning of a fit
+        :param step:
+        :return:
+        """
+        pass
+
     def on_fit_start(self, trainer):
         """
         Called once at the start of training, e.g at the start of `BasicTrainer.fit`
@@ -98,6 +106,10 @@ class StepCallback:
 @dataclass
 class CallbackRunner:
     callbacks: list[Callback]
+
+    def set_step_number(self, step: int):
+        for cb in self.callbacks:
+            cb.set_step_number(step)
 
     def on_fit_start(self, trainer):
         for cb in self.callbacks:

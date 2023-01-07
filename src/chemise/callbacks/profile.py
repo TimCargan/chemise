@@ -26,6 +26,7 @@ class Profile(Callback):
     # Use an internal step count, accessing the state step count is slow (500ms vs 1ms).
     _step_count: int = 0
     _group_id: int = 0
+
     def __post_init__(self):
         if isinstance(self.steps, int):
             self.steps = (self.steps, self.steps+self.steps)

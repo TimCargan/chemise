@@ -22,17 +22,19 @@ class Checkpointer(Callback):
     intra_train_freq: int = None
     auto_restore: bool = False
 
+    _step_count: int = 0
+
+    def set_step_number(self, step: int):
+        self._step_count = step
+
     def on_fit_start(self, trainer: BasicTrainer):
         if self.auto_restore:
             logging.warning("Restoring checkpoint at start of run")
             trainer.state = cp.restore_checkpoint(self.ckpt_dir, trainer.state)
 
-    def on_train_start(self, trainer):
-        self.train_c = 0
-
     def on_train_batch_end(self, trainer: BasicTrainer):
-        self.train_c += 1
-        if self.intra_train_freq and self.train_c % self.intra_train_freq == 0:
+        self._step_count += 1
+        if self.intra_train_freq and self._step_count % self.intra_train_freq == 0:
             self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
