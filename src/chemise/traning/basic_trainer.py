@@ -520,6 +520,10 @@ class BasicTrainer:
         :return:
         """
         rngs = self._make_rngs()
+        return self._j__call__(x, rngs, **kwargs)
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _j__call__(self, x, rngs, **kwargs):
         return self.state.apply_fn({'params': self.state.params}, x, rngs=rngs, train=False, **kwargs)
 
     def reset(self):
