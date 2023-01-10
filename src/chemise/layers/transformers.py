@@ -1,7 +1,12 @@
+from typing import Callable, Tuple, Any
+
 import flax.linen as nn
 import jax
 import numpy as np
 
+Array = Any
+Shape = Tuple[int]
+Dtype = Any
 
 class PositionalEncoding(nn.Module):
     d_model : int         # Hidden dimensionality of the input.
@@ -20,6 +25,32 @@ class PositionalEncoding(nn.Module):
     def __call__(self, x):
         x = x + self.pe[:, :x.shape[1]]
         return x
+
+
+class AddPositionEmbs(nn.Module):
+    """Adds learned positional embeddings to the inputs.
+    Attributes:
+    posemb_init: positional embedding initializer.
+
+    from https://github.com/google-research/vision_transformer/blob/c5f3aaed603bfb90418236db44306d8829eafbe6/vit_jax/models_vit.py#L37
+    """
+
+    posemb_init: Callable[[jax.random.PRNGKey, Shape, Dtype], Array]
+
+    @nn.compact
+    def __call__(self, inputs):
+        """Applies the AddPositionEmbs module.
+        Args:
+          inputs: Inputs to the layer.
+        Returns:
+          Output tensor with shape `(bs, timesteps, in_dim)`.
+        """
+        # inputs.shape is (batch_size, seq_len, emb_dim).
+        assert inputs.ndim == 3, ('Number of dimensions should be 3,'
+                                  ' but it is: %d' % inputs.ndim)
+        pos_emb_shape = (1, inputs.shape[1], inputs.shape[2])
+        pe = self.param('pos_embedding', self.posemb_init, pos_emb_shape)
+        return inputs + pe
 
 class EncoderBlock(nn.Module):
     input_dims: int
