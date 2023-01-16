@@ -12,7 +12,6 @@ import numpy as np
 from absl import logging, flags
 from flax import struct
 from flax.jax_utils import replicate, unreplicate
-from flax.training import dynamic_scale as dynamic_scale_lib
 from flax.training.train_state import TrainState
 from jaxtyping import Num, Array, Bool
 from rich.console import Console
@@ -21,6 +20,8 @@ from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
+# from flax.training import dynamic_scale as dynamic_scale_lib
+from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
 from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
 
@@ -110,7 +111,7 @@ def no_on_dev_shape(tree, *args) -> list:
 
 
 class MpTrainState(TrainState):
-    dynamic_scale: dynamic_scale_lib.DynamicScale = struct.field(default=None)
+    dynamic_scale: DynamicScale = struct.field(default=None)
 
     @classmethod
     def from_train_state(cls, state: TrainState):
