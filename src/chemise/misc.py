@@ -54,11 +54,19 @@ def gaussian_blur(img: Num[Array, "... H W C"], kernel_size: tuple[int, int] = (
     :return:
     """
     gk = gaussian_2d_kernel(kernel_size, sigma=sigma)
+    gk = jnp.expand_dims(gk, axis=[0, 1])
     shape = img.shape
-    gk = jnp.tile(gk, (*shape[:-3], 1, 1, shape[-1]))
-    conv_ = nn.linear._conv_dimension_numbers(shape)
-    res = jax.lax.conv_general_dilated(img, gk, window_strides=(1, 1), padding="SAME", dimension_numbers=conv_)
+    gk = jnp.tile(gk, (shape[-1], shape[-1], 1, 1))  # rhs = OIHW conv kernel tensor
+
+    img = jnp.transpose(img, [0, 3, 1, 2])  # lhs = NCHW image tensor
+    blur = jax.lax.conv(img, gk, window_strides=(1, 1),  padding='SAME')
+    res = jnp.transpose(blur, [0, 2, 3, 1])
     return res
+
+
+@functools.partial(jax.vmap, in_axes=(3, None, None), out_axes=(3))
+def v_gaussian_blur(img: Num[Array, "... H W C"], kernel_size: tuple[int, int] = (7, 7), sigma=2):
+    return gaussian_blur(jnp.expand_dims(img, axis=-1), kernel_size, sigma)[..., 0]
 
 
 def nd_tile(x: Num[Array, "... N"], /, size:Sequence[int]) -> Num[Array, "... N"]:
