@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 import mlflow
-from absl import flags
+from absl import flags, logging
 
 from chemise.callbacks.abc_callback import Callback
 # from chemise.traning import BasicTrainer
@@ -28,7 +28,10 @@ class Mlflow(Callback):
             # Swap dict of list and then reduce mean
             met = list_dict_to_dict_list(met)
             met = {k: float(jnp.nanmean(jnp.stack(v, axis=0))) for k, v in met.items()}
-            mlflow.log_metrics(met, step=self._step_count)
+            try:
+                mlflow.log_metrics(met, step=self._step_count)
+            except Exception as e:
+                logging.warning(e)
         self._step_count += 1
 
     def on_test_end(self, trainer):
