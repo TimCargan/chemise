@@ -36,9 +36,13 @@ class AddPositionEmbs(nn.Module):
     """
 
     posemb_init: Callable[[jax.random.PRNGKey, Shape, Dtype], Array]
+    dims: int
     dtype: Dtype = jnp.float32
+    max_len: int = 512
+    def setup(self):
+        pos_emb_shape = (1, self.max_len, self.dims)
+        self.pe = self.param('pos_embedding', self.posemb_init, pos_emb_shape, self.dtype)
 
-    @nn.compact
     def __call__(self, inputs):
         """Applies the AddPositionEmbs module.
         Args:
@@ -49,9 +53,8 @@ class AddPositionEmbs(nn.Module):
         # inputs.shape is (batch_size, seq_len, emb_dim).
         assert inputs.ndim == 3, ('Number of dimensions should be 3,'
                                   ' but it is: %d' % inputs.ndim)
-        pos_emb_shape = (1, inputs.shape[1], inputs.shape[2])
-        pe = self.param('pos_embedding', self.posemb_init, pos_emb_shape, self.dtype)
-        return inputs + pe
+
+        return inputs + self.pe[:, :inputs.shape[1]]
 
 class EncoderBlock(nn.Module):
     input_dims: int
