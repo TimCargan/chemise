@@ -83,6 +83,38 @@ class EncoderBlock(nn.Module):
         return x
 
 
+class DecoderBlock(nn.Module):
+    input_dims: int
+    num_heads: int
+    dim_feedforward: int
+    dropout_rate: float
+
+    dtype: Dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, x, encoded, self_mask=None, cross_mask=None, train=True):
+        # Self Multi Head Attention block
+        atten = nn.LayerNorm(dtype=self.dtype)(x)
+        atten = nn.SelfAttention(num_heads=self.num_heads, dtype=self.dtype)(atten, mask=self_mask, deterministic=not train)
+        atten = nn.Dropout(self.dropout_rate)(atten, deterministic=not train)
+        x = x + atten # Skip connection
+
+        # Corss attention
+        atten = nn.LayerNorm(dtype=self.dtype)(x)
+        atten = nn.MultiHeadDotProductAttention(num_heads=self.num_heads, dtype=self.dtype)(atten, encoded, mask=cross_mask, deterministic=not train)
+        atten = nn.Dropout(self.dropout_rate)(atten, deterministic=not train)
+        x = x + atten # Skip connection
+
+        # MLP block
+        ff = nn.LayerNorm(dtype=self.dtype)(x)
+        ff = nn.Dense(self.dim_feedforward, dtype=self.dtype)(ff)
+        ff = nn.gelu(ff)
+        ff = nn.Dropout(self.dropout_rate)(ff, deterministic=not train)
+        ff = nn.Dense(self.input_dims, dtype=self.dtype)(ff)
+        x = x + ff # Skip connection
+
+        return x
+
 class TransformerEncoder(nn.Module):
     input_dim: int
     dim_feedforward: int
@@ -110,5 +142,36 @@ class TransformerEncoder(nn.Module):
             # skip_x = x # Save for next cycle
 
             x = encb(x, mask=mask, train=train)
+            x = nn.LayerNorm(dtype=self.dtype)(x)
+        return x
+
+
+class Decoder(nn.Module):
+    input_dim: int
+    dim_feedforward: int
+
+    num_layers: int = 2
+    num_heads: int = 4
+    dropout_prob: float = 0.05
+    skip: bool = True
+
+    dtype: Dtype = jnp.float32
+
+    @nn.compact
+    def __call__(self, x, encoded, self_mask=None, cross_mask=None, train=True):
+        x = nn.LayerNorm(dtype=self.dtype, name="pre_decode_layer_norm")(x)
+
+        x = DecoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
+                         self.dropout_prob, dtype=self.dtype)(x, encoded, self_mask=self_mask, cross_mask=cross_mask, train=train)
+
+        for l in range(self.num_layers - 1):
+            # Make the encoder block
+            encb = DecoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
+                                self.dropout_prob, dtype=self.dtype)
+            # Apply it with a skip connection
+            # x = skip_x + x if self.skip else x
+            # skip_x = x # Save for next cycle
+
+            x = encb(x, encoded, self_mask=self_mask, cross_mask=cross_mask, train=train)
             x = nn.LayerNorm(dtype=self.dtype)(x)
         return x
