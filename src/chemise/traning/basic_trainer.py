@@ -201,6 +201,7 @@ class BasicTrainer:
 
         y_pred = self.state.apply_fn({'params': params}, x, rngs=rngs, train=train)
         p_loss = self.loss_fn(y, y_pred)
+        # TODO: add an asset that there is no batch reduction and maybe a reduce(loss, "batch ... -> batch", "mean")
         p_loss = jnp.where(mask, p_loss, 0.0)  # Apply mask to loss
         loss = p_loss.sum() / global_batch
         return loss, y_pred
