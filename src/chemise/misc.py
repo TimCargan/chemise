@@ -22,7 +22,7 @@ def gaussian_1d_kernel(size: int, sigma: int) -> Float[Array, "W"]:
     return gk
 
 
-def gaussian_nd_kernel(size: Sequence[int], sigma: int) -> Float[Array, "..."]:
+def gaussian_nd_kernel(size: Sequence[int], sigma: Sequence[float] | float) -> Float[Array, "..."]:
     """
     Generates an nd gaussian kernel of a given size
     :param size: Sequence, size of kernel (d0, d1 ..., dn)
@@ -31,7 +31,8 @@ def gaussian_nd_kernel(size: Sequence[int], sigma: int) -> Float[Array, "..."]:
     """
     nd = len(size) - 1
     expand_dims = np.arange(nd) - nd
-    gks = [jnp.expand_dims(gaussian_1d_kernel(s, sigma), axis=expand_dims + i) for i, s in enumerate(size)]
+    sigma = sigma if isinstance(sigma, Sequence) else np.repeat(sigma, len(size)) # Make sure sigma is a list
+    gks = [jnp.expand_dims(gaussian_1d_kernel(s, sigma[i]), axis=expand_dims + i) for i, s in enumerate(size)]
     gaussian_kernel = functools.reduce(operator.mul, gks)
     return gaussian_kernel
 
