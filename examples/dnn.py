@@ -24,7 +24,7 @@ FLAGS = flags.FLAGS
 
 class FlaxDnet(nn.Module):
     @nn.compact
-    def __call__(self, x):
+    def __call__(self, x, train=False):
         # Reshape the inputs out of the dict
         x = x["x"]
         x = MLP(width=FLAGS.mlp_width, depth=FLAGS.mlp_depth)(x)
@@ -54,11 +54,11 @@ def make_model(zeros) -> BasicTrainer:
 def main(argv):
         # Make some random data, this is bad as the test and train is all the same
         data = tf.data.Dataset.from_tensors(({"x": tf.ones(20)}, {"pred": [1]}))
-        d = data.repeat(100).batch(10)
+        d = data.repeat(100).batch(10, drop_remainder=True)
         t = data.repeat(5).batch(10)
 
         # Make the model and init the weights with 0s
-        zeros = datasetspec_to_zero(d.element_spec)
+        zeros = datasetspec_to_zero(d.element_spec, batch_size=10)
         m = make_model(zeros)
 
         # Set up the callbacks
