@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-import operator
-import time
-from dataclasses import dataclass
-from functools import partial
-from typing import Callable, Any, Tuple, List, Iterator
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl import logging, flags
+import operator
+import time
+from absl import flags, logging
+from dataclasses import dataclass
 from flax import struct
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
-from jaxtyping import Num, Array, Bool
+from functools import partial
+from jaxtyping import Array, Bool, Num
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
+from typing import Any, Callable, Iterator, List, Tuple
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
 # from flax.training import dynamic_scale as dynamic_scale_lib
 from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
-from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
+from chemise.utils import get_batch_size, make_metric_string, mean_reduce_dicts, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
@@ -133,6 +132,7 @@ class BasicTrainer:
      - Fit
      - Predict
 
+    train_window: Set it to None to avoid the annoying boxes 
     """
     state: TrainState | MpTrainState = struct.field(compare=False)
     loss_fn: Callable[[Input, Input], Num[Array, "..."]] = struct.field(pytree_node=False)
@@ -216,7 +216,7 @@ class BasicTrainer:
             """
         return self._step(params, batch, rngs, train, global_batch)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), donate_argnums=(1,), axis_name="batch")
     # @partial(jax.vmap, in_axis=(None,0 , 0, 0), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
@@ -341,8 +341,7 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step,
-                                                  group_id=self._group_id):
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=self._group_id):
                 if not (batch := next(d_iter, None)):
                     break
 
@@ -429,9 +428,10 @@ class BasicTrainer:
             reshaped = self.on_dev_shape(first_el, 0, False)
             sanity_check(reshaped[0])
 
-        con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
-        live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
-        live.start()
+        if self.train_window:
+            con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
+            live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
+            live.start()
 
         # train_data = add_device_batch(train_data)
         # val_data = add_device_batch(val_data) if val_data else val_data
@@ -489,7 +489,8 @@ class BasicTrainer:
             callbacks.on_epoch_end(self)
 
         callbacks.on_fit_end(self)
-        live.stop()  # Close the live window since we aren't in a contex
+        if self.train_window:
+            live.stop()  # Close the live window since we aren't in a contex
         return
 
     def epoc_metrics(self):
@@ -556,7 +557,7 @@ class BasicTrainer:
 
             c += 1
 
-    def __call__(self, x, **kwargs):
+    def __call__(self, x, train=False, **kwargs):
         """
         Stateful call to run the model. This is not an efficient way to use the mode but can be helpful for debugging.
         :param x: data to pass to the model
@@ -564,11 +565,11 @@ class BasicTrainer:
         :return:
         """
         rngs = self._make_rngs()
-        return self._j__call__(x, rngs, self.state.params, **kwargs)
+        return self._j__call__(x, rngs, self.state.params, train=train, **kwargs)
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _j__call__(self, x, rngs, params, **kwargs):
-        return self.state.apply_fn({'params': params}, x, rngs=rngs, train=False, **kwargs)
+    @partial(jax.jit, static_argnums=(0, 4), static_argnames=("train",))
+    def _j__call__(self, x, rngs, params, train=False, **kwargs):
+        return self.state.apply_fn({'params': params}, x, rngs=rngs, train=train, **kwargs)
 
     def reset(self):
         """
