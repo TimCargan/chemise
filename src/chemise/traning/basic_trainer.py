@@ -556,7 +556,7 @@ class BasicTrainer:
 
             c += 1
 
-    def __call__(self, x, **kwargs):
+    def __call__(self, x, train=False, **kwargs):
         """
         Stateful call to run the model. This is not an efficient way to use the mode but can be helpful for debugging.
         :param x: data to pass to the model
@@ -564,11 +564,11 @@ class BasicTrainer:
         :return:
         """
         rngs = self._make_rngs()
-        return self._j__call__(x, rngs, self.state.params, **kwargs)
+        return self._j__call__(x, rngs, self.state.params, train=train, **kwargs)
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _j__call__(self, x, rngs, params, **kwargs):
-        return self.state.apply_fn({'params': params}, x, rngs=rngs, train=False, **kwargs)
+    @partial(jax.jit, static_argnums=(0, 4), static_argnames=("train",))
+    def _j__call__(self, x, rngs, params, train=False, **kwargs):
+        return self.state.apply_fn({'params': params}, x, rngs=rngs, train=train, **kwargs)
 
     def reset(self):
         """
