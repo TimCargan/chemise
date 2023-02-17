@@ -49,6 +49,7 @@ class Checkpointer(Callback):
     @staticmethod
     def restore(trainer: BasicTrainer, ckpt_dir: Path | str):
         print(f"Restore from {ckpt_dir}")
+        logging.warning(f"Restore from {ckpt_dir}")
         orbax_checkpointer = None #orbax.Checkpointer(orbax.PyTreeCheckpointHandler())
         trainer.state = cp.restore_checkpoint(ckpt_dir=ckpt_dir, target=trainer.state,
                                               orbax_checkpointer=orbax_checkpointer)
