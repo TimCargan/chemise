@@ -2,14 +2,26 @@
 
 > Chemises - a lightweight undergarment made of linen
 
-This is a library of helper functions and basic module layers for uses with  the `flax.linen` 
+This is a library of helper functions and basic module layers for uses with  the `flax.linen` library.
+We aim to provide the standard boilerplate needed to train models quickly and easily. 
+Whilst being highly extendable to fit more complex training pattens.
+
+For now, we rely on `tensorlfow.data` as the input data.
+
 
 
 ## Set Up
-The easiest way is to clone the repo and install it. 
-Hopefully if I have the config set up it should install all the deps
+It is recommended to install jax first, see their documentation [here](https://github.com/google/jax/#installation).
+
 ```shell
-git clone 
+pip install chemise
+```
+
+Alternatively to install from source, clone the repo and install it. 
+
+```shell
+git clone <repo>
+cd <repo>
 pip install -e .
 ```
 
