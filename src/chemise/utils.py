@@ -72,10 +72,14 @@ def datasetspec_to_zero(ds, batch_size: int = None, force_size: bool = False):
     :param force_size: Overwrite the batch size
     :return:
     """
+    import tensorflow as tf
     def make_zero(el):
         shape = el.shape
         shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
-        return np.zeros(shape=shape, dtype=el.dtype.as_numpy_dtype)
+        dtype = el.dtype
+        if isinstance(dtype, tf.dtypes.DType):
+            dtype = el.dtype.as_numpy_dtype
+        return np.zeros(shape=shape, dtype=dtype)
 
     return jax.tree_util.tree_map(make_zero, ds)
 

@@ -3,16 +3,16 @@ import itertools
 import random
 from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Any
+from typing import Any, Callable
 
 import jax
 import numpy as np
 import tensorflow as tf
-from absl import logging, flags
+from absl import flags, logging
 
 from chemise.utils import get_batch_dims
 
-flags.DEFINE_boolean("prefetch_pack", default=True, help="Pack items when prefetch to reduce number of H2D mem-copy calls")
+flags.DEFINE_boolean("prefetch_pack", default=False, help="Pack items when prefetch to reduce number of H2D mem-copy calls")
 FLAGS = flags.FLAGS
 
 @dataclass(unsafe_hash=True)
