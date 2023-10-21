@@ -133,6 +133,7 @@ class BasicTrainer:
      - Fit
      - Predict
 
+    train_window: Set it to None to avoid the annoying boxes 
     """
     state: TrainState | MpTrainState = struct.field(compare=False)
     loss_fn: Callable[[Input, Input], Num[Array, "..."]] = struct.field(pytree_node=False)
@@ -216,7 +217,7 @@ class BasicTrainer:
             """
         return self._step(params, batch, rngs, train, global_batch)
 
-    @partial(jax.pmap, static_broadcasted_argnums=(0,), axis_name="batch")
+    @partial(jax.pmap, static_broadcasted_argnums=(0,), donate_argnums=(1,), axis_name="batch")
     # @partial(jax.vmap, in_axis=(None,0 , 0, 0), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
@@ -341,29 +342,29 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step,
-                                                  group_id=self._group_id):
-                if not (batch := next(d_iter, None)):
-                    break
+            # with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step,
+            #                                       group_id=self._group_id):
+            if not (batch := next(d_iter, None)):
+                break
 
-                # Slice state and RNGs as needed if dev_batch is less than number of devs
-                s = get_batch_size(batch)
-                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
-                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+            # Slice state and RNGs as needed if dev_batch is less than number of devs
+            s = get_batch_size(batch)
+            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-                # Run step
-                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+            # Run step
+            r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
-                # Un-replicate so callbacks and metrics work
-                self.state, metrics = unreplicate((r_state, r_metrics))
+            # Un-replicate so callbacks and metrics work
+            self.state, metrics = unreplicate((r_state, r_metrics))
 
-                # re-broadcast state if needed
-                r_state = r_state if s == dev_batch_size else replicate(self.state)
+            # re-broadcast state if needed
+            r_state = r_state if s == dev_batch_size else replicate(self.state)
 
-                # Update metrics
-                hist.append(metrics)
-                step += 1
-                callback.step_end_cb(self)
+            # Update metrics
+            hist.append(metrics)
+            step += 1
+            callback.step_end_cb(self)
 
         callback.end_cb(self)
 
@@ -429,9 +430,10 @@ class BasicTrainer:
             reshaped = self.on_dev_shape(first_el, 0, False)
             sanity_check(reshaped[0])
 
-        con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
-        live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
-        live.start()
+        if self.train_window:
+            con = Console(color_system="windows", force_interactive=FLAGS.interactive, force_terminal=FLAGS.interactive)
+            live = Live(self.train_window, console=con, refresh_per_second=FLAGS.refresh_per_second)
+            live.start()
 
         # train_data = add_device_batch(train_data)
         # val_data = add_device_batch(val_data) if val_data else val_data
@@ -489,7 +491,8 @@ class BasicTrainer:
             callbacks.on_epoch_end(self)
 
         callbacks.on_fit_end(self)
-        live.stop()  # Close the live window since we aren't in a contex
+        if self.train_window:
+            live.stop()  # Close the live window since we aren't in a contex
         return
 
     def epoc_metrics(self):
