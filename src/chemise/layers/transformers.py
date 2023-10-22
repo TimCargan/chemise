@@ -1,8 +1,7 @@
-from typing import Callable, Tuple, Any
-
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from typing import Any, Callable, Tuple
 
 Array = Any
 Shape = Tuple[int]
@@ -79,7 +78,6 @@ class EncoderBlock(nn.Module):
         ff = nn.Dropout(self.dropout_rate)(ff, deterministic=not train)
         ff = nn.Dense(self.input_dims, dtype=self.dtype)(ff)
         x = x + ff # Skip connection
-
         return x
 
 
@@ -112,7 +110,6 @@ class DecoderBlock(nn.Module):
         ff = nn.Dropout(self.dropout_rate)(ff, deterministic=not train)
         ff = nn.Dense(self.input_dims, dtype=self.dtype)(ff)
         x = x + ff # Skip connection
-
         return x
 
 class TransformerEncoder(nn.Module):
@@ -128,21 +125,11 @@ class TransformerEncoder(nn.Module):
 
     @nn.compact
     def __call__(self, x, mask=None, train=True):
-        skip_x = x
-        x = nn.LayerNorm(dtype=self.dtype)(x)
-        x = EncoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
-                         self.dropout_prob, dtype=self.dtype)(x, mask=mask, train=train)
-
-        for l in range(self.num_layers - 1):
+        for l in range(self.num_layers):
             # Make the encoder block
-            encb = EncoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
+            enc_bloc = EncoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
                                 self.dropout_prob, dtype=self.dtype)
-            # Apply it with a skip connection
-            # x = skip_x + x if self.skip else x
-            # skip_x = x # Save for next cycle
-
-            x = encb(x, mask=mask, train=train)
-            x = nn.LayerNorm(dtype=self.dtype)(x)
+            x = enc_bloc(x, mask=mask, train=train)
         return x
 
 
@@ -159,19 +146,9 @@ class Decoder(nn.Module):
 
     @nn.compact
     def __call__(self, x, encoded, self_mask=None, cross_mask=None, train=True):
-        x = nn.LayerNorm(dtype=self.dtype, name="pre_decode_layer_norm")(x)
-
-        x = DecoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
-                         self.dropout_prob, dtype=self.dtype)(x, encoded, self_mask=self_mask, cross_mask=cross_mask, train=train)
-
-        for l in range(self.num_layers - 1):
-            # Make the encoder block
-            encb = DecoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
+        for l in range(self.num_layers):
+            # Make the decoder block
+            dec_bloc = DecoderBlock(self.input_dim, self.num_heads, self.dim_feedforward,
                                 self.dropout_prob, dtype=self.dtype)
-            # Apply it with a skip connection
-            # x = skip_x + x if self.skip else x
-            # skip_x = x # Save for next cycle
-
-            x = encb(x, encoded, self_mask=self_mask, cross_mask=cross_mask, train=train)
-            x = nn.LayerNorm(dtype=self.dtype)(x)
+            x = dec_bloc(x, encoded, self_mask=self_mask, cross_mask=cross_mask, train=train)
         return x
