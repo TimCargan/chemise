@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING
-
+import datetime
 import orbax
 from absl import logging
-from flax.training import checkpoints as cp
+from dataclasses import dataclass
 from flax.training import orbax_utils
 from jax import numpy as jnp
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from chemise.callbacks.abc_callback import Callback
 
@@ -24,13 +23,14 @@ class Checkpointer(Callback):
     keep_every_n_steps: int = None
     intra_train_freq: int = None
     auto_restore: bool = False
-
+    keep_time_interval: datetime.timedelta = None
     _step_count: int = 0
     _save_args = None  # A mapping to let the checkpoint manager know how to compress the ckpt
 
     def __post_init__(self):
         mgr_options = orbax.checkpoint.CheckpointManagerOptions(
-            create=True, max_to_keep=self.keep, keep_period=self.keep_every_n_steps, step_prefix='ckpt')
+            create=True, max_to_keep=self.keep, keep_time_interval=self.keep_time_interval,
+            keep_period=self.keep_every_n_steps, step_prefix='ckpt')
         self.ckpt_mgr = orbax.checkpoint.CheckpointManager(self.ckpt_dir,
                                                            orbax.checkpoint.Checkpointer(
                                                                orbax.checkpoint.PyTreeCheckpointHandler()), mgr_options)
