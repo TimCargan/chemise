@@ -66,16 +66,18 @@ class Checkpointer(Callback):
         #                    orbax_checkpointer=orbax_checkpointer)
 
     @staticmethod
-    def restore(trainer: BasicTrainer, ckpt_dir: Path | str, step_prefix: str = "ckpt"):
+    def restore(trainer: BasicTrainer, ckpt_dir: Path | str, step_prefix: str = "ckpt", use_restore_kwargs: bool = True):
         print(f"Restore from {ckpt_dir}")
         logging.warning(f"Restore from {ckpt_dir}")
         ckpter = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
         mgr_options = orbax.checkpoint.CheckpointManagerOptions(step_prefix=step_prefix)
         ckpt_mgr = orbax.checkpoint.CheckpointManager(ckpt_dir, ckpter, mgr_options)
-        restore_args = orbax_utils.restore_args_from_target(trainer.state, mesh=None)
 
         step = ckpt_mgr.latest_step()
-        trainer.state = ckpt_mgr.restore(step, items=trainer.state, restore_kwargs={'restore_args': restore_args})
+        # TDOD: find out more about the kwargs
+        restore_args = orbax_utils.restore_args_from_target(trainer.state, mesh=None)
+        restore_kwargs = {'restore_args': restore_args} if use_restore_kwargs else None
+        trainer.state = ckpt_mgr.restore(step, items=trainer.state, restore_kwargs=restore_kwargs)
         # orbax_checkpointer = None #orbax.Checkpointer(orbax.PyTreeCheckpointHandler())
         # trainer.state = cp.restore_checkpoint(ckpt_dir=ckpt_dir, target=trainer.state,
         #                                       orbax_checkpointer=orbax_checkpointer)
