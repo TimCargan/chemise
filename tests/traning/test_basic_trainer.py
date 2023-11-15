@@ -1,14 +1,12 @@
-from unittest.mock import MagicMock
-
 import flax.linen as nn
 import jax.test_util
 import numpy as np
 import optax
 import tensorflow as tf
 from absl import flags
-from absl.testing import absltest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 from flax.training.train_state import TrainState
+from unittest.mock import MagicMock
 
 import chemise.traning.basic_trainer as basic_trainer
 from chemise.layers import MLP

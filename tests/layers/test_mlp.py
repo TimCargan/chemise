@@ -2,10 +2,9 @@ import chex
 import jax
 import jax.test_util
 import numpy as np
-from absl.testing import absltest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
-from chemise.layers.mlp import MLP, MLC
+from chemise.layers.mlp import MLC, MLP
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()
