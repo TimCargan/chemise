@@ -1,12 +1,10 @@
-import jax.test_util
-
 import chex
 import jax.numpy as jnp
 import jax.test_util
+import jax.test_util
 import tensorflow as tf
 from absl import flags
-from absl.testing import absltest
-from absl.testing import parameterized
+from absl.testing import absltest, parameterized
 
 from chemise.traning.prefetch import Packer
 
