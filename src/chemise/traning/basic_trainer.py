@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-import operator
-import time
-from dataclasses import dataclass
-from functools import partial
-from typing import Callable, Any, Tuple, List, Iterator
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-from absl import logging, flags
+import operator
+import time
+from absl import flags, logging
+from dataclasses import dataclass
 from flax import struct
 from flax.jax_utils import replicate, unreplicate
 from flax.training.train_state import TrainState
-from jaxtyping import Num, Array, Bool
+from functools import partial
+from jaxtyping import Array, Bool, Num
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from tensorflow import data as tfd  # Only for typing
+from typing import Any, Callable, Iterator, List, Tuple
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
 # from flax.training import dynamic_scale as dynamic_scale_lib
 from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
-from chemise.utils import mean_reduce_dicts, make_metric_string, seconds_pretty, get_batch_size
+from chemise.utils import get_batch_size, make_metric_string, mean_reduce_dicts, seconds_pretty
 
 flags.DEFINE_bool("interactive", default=False, help="Run in interactive mode. e.g print graphs", short_name='i')
 flags.DEFINE_float("refresh_per_second", default=0.2, help="Frequency in Hz to redraw in interactive mode")
@@ -342,29 +341,28 @@ class BasicTrainer:
         step = int(np.max(self.state.step))
         while True:
             callback.step_start_cb(self)
-            # with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step,
-            #                                       group_id=self._group_id):
-            if not (batch := next(d_iter, None)):
-                break
+            with jax.profiler.StepTraceAnnotation("train", step_name=f"train {step}", step_num=step, group_id=self._group_id):
+                if not (batch := next(d_iter, None)):
+                    break
 
-            # Slice state and RNGs as needed if dev_batch is less than number of devs
-            s = get_batch_size(batch)
-            _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
-            _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
+                # Slice state and RNGs as needed if dev_batch is less than number of devs
+                s = get_batch_size(batch)
+                _r_state = r_state if s == dev_batch_size else self.slice(r_state, s)
+                _rngs = rngs if s == dev_batch_size else self.slice(rngs, s)
 
-            # Run step
-            r_state, r_metrics = step_fn(_r_state, batch, _rngs)
+                # Run step
+                r_state, r_metrics = step_fn(_r_state, batch, _rngs)
 
-            # Un-replicate so callbacks and metrics work
-            self.state, metrics = unreplicate((r_state, r_metrics))
+                # Un-replicate so callbacks and metrics work
+                self.state, metrics = unreplicate((r_state, r_metrics))
 
-            # re-broadcast state if needed
-            r_state = r_state if s == dev_batch_size else replicate(self.state)
+                # re-broadcast state if needed
+                r_state = r_state if s == dev_batch_size else replicate(self.state)
 
-            # Update metrics
-            hist.append(metrics)
-            step += 1
-            callback.step_end_cb(self)
+                # Update metrics
+                hist.append(metrics)
+                step += 1
+                callback.step_end_cb(self)
 
         callback.end_cb(self)
 
