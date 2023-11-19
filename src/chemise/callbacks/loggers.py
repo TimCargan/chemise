@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Any
 
 import jax.numpy as jnp
 import mlflow
@@ -7,7 +6,7 @@ from absl import flags, logging
 
 from chemise.callbacks.abc_callback import Callback
 # from chemise.traning import BasicTrainer
-from chemise.utils import mean_reduce_dicts, list_dict_to_dict_list
+from chemise.utils import list_dict_to_dict_list, mean_reduce_dicts
 
 FLAGS = flags.FLAGS
 
@@ -29,7 +28,9 @@ class Mlflow(Callback):
             met = trainer.train_hist["epochs"][-1]["train"][-self.update_metric_freq:]
             # Swap dict of list and then reduce mean
             met = list_dict_to_dict_list(met)
-            met = {k: float(jnp.nanmean(jnp.stack(v, axis=0))) for k, v in met.items()}
+            met = {k: list(jnp.nanmean(jnp.stack(v, axis=0), axis=0)) for k, v in met.items()}
+            # This makes the vector runners have nicer graph, 1 per vector
+            met = {f"{k}_{i}": float(v) for k, lv in met.items() for i, v in enumerate(lv)}
 
             if self.log_opt_hyperparams:
                 opt_hyperparams = trainer.state.opt_state.hyperparams
