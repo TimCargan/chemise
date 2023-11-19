@@ -1,1 +1,1 @@
-from chemise.traning.basic_trainer import BasicTrainer
+from chemise.traning.basic_trainer import BasicTrainer, MpTrainState

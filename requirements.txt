@@ -1,5 +1,11 @@
-setuptools
-flax
-jax
 absl-py
 numpy
+jax
+jaxtyping
+einops
+flax
+orbax
+chex
+setuptools
+plotext
+rich >= 12.4
