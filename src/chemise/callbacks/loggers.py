@@ -20,6 +20,7 @@ class Mlflow(Callback):
     # def on_fit_start(self, trainer):
     #     #TOOD: add some checks to make sure there is exper running its here
     #     pass
+
     def set_step_number(self, step: int):
         self._step_count = step
 
@@ -29,8 +30,8 @@ class Mlflow(Callback):
             # Swap dict of list and then reduce mean
             met = list_dict_to_dict_list(met)
             met = {k: list(jnp.nanmean(jnp.stack(v, axis=0), axis=0)) for k, v in met.items()}
-            # This makes the vector runners have nicer graph, 1 per vector
-            met = {f"{k}_{i}": float(v) for k, lv in met.items() for i, v in enumerate(lv)}
+            # add a counter to the metric for vector runs
+            met = {f"{k}_{i}" if i > 0 else k: float(v) for k, lv in met.items() for i, v in enumerate(lv)}
 
             if self.log_opt_hyperparams:
                 opt_hyperparams = trainer.state.opt_state.hyperparams
