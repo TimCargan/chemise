@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import mlflow
@@ -7,9 +6,6 @@ from absl import flags, logging
 
 from chemise.callbacks.abc_callback import Callback
 from chemise.utils import list_dict_to_dict_list
-
-if TYPE_CHECKING:
-    from chemise.traning.basic_trainer import BasicTrainer
 
 FLAGS = flags.FLAGS
 
@@ -29,7 +25,7 @@ class Mlflow(Callback):
     def set_step_number(self, step: int):
         self._step_count = step
 
-    def on_train_batch_end(self, trainer: BasicTrainer):
+    def on_train_batch_end(self, trainer):
         if self._step_count % self.update_metric_freq == 0:
             met = trainer.train_hist["epochs"][-1]["train"][-self.update_metric_freq:]
             met = self.shape(met)
@@ -42,7 +38,7 @@ class Mlflow(Callback):
             self._safe_log(met, self._step_count)
         self._step_count += 1
 
-    def on_test_end(self, trainer: BasicTrainer):
+    def on_test_end(self, trainer):
         met = trainer.train_hist["epochs"][-1]["test"]
         met = self.shape(met)
         # add val prefix
