@@ -27,6 +27,7 @@ class Checkpointer(Callback):
     auto_restore: bool = False  # Restore the most recent ckpt when training begins
     keep_epoch_steps: bool = False  # Keep the step number for every epoch
     save_epochs: bool = True  # Save epochs as their own checkpoints with a prefix epoch
+    save_ckpt_on_epoch_end: bool = True  # Save a step ckpt on epoch end
     _step_count: int = 0
     _epoch: int = 0
     _save_args = None  # A mapping to let the checkpoint manager know how to compress the ckpt
@@ -56,8 +57,9 @@ class Checkpointer(Callback):
             self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
-        # This is a hack and I should find a better way
+
         if self.keep_epoch_steps:
+            # This is a hack and I should find a better way
             step = int(jnp.max(trainer.state.step))
             self.ckpt_mgr._options.save_on_steps.append(step)
 
@@ -65,6 +67,9 @@ class Checkpointer(Callback):
             mgr_options = orbax.checkpoint.CheckpointManagerOptions(create=True, step_prefix='epoch')
             epoch_ckpt_mgr = orbax.checkpoint.CheckpointManager(self.ckpt_dir, self.checkpointer, mgr_options)
             epoch_ckpt_mgr.save(self._epoch, trainer.state, save_kwargs={'save_args': self._save_args}, force=True)
+
+        if self.save_ckpt_on_epoch_end:
+            self.save(trainer)
 
         self._epoch += 1
 
