@@ -64,8 +64,9 @@ class Checkpointer(Callback):
             self.ckpt_mgr._options.save_on_steps.append(step)
 
         if self.save_epochs:
+            epoch_dir = f"{self.ckpt_dir}/epoch"
             mgr_options = orbax.checkpoint.CheckpointManagerOptions(create=True, step_prefix='epoch')
-            epoch_ckpt_mgr = orbax.checkpoint.CheckpointManager(self.ckpt_dir, self.checkpointer, mgr_options)
+            epoch_ckpt_mgr = orbax.checkpoint.CheckpointManager(epoch_dir, self.checkpointer, mgr_options)
             epoch_ckpt_mgr.save(self._epoch, trainer.state, save_kwargs={'save_args': self._save_args}, force=True)
 
         if self.save_ckpt_on_epoch_end:
