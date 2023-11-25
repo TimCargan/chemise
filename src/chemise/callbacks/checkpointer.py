@@ -48,7 +48,7 @@ class Checkpointer(Callback):
     def on_fit_start(self, trainer: BasicTrainer):
         # Set the save args on fit begin to reduce the number of calls
         self._save_args = orbax_utils.save_args_from_target(trainer.state)
-        self.last_ckpt_time = datetime.datetime.now()
+        self._last_ckpt_time = datetime.datetime.now()
         if self.auto_restore:
             logging.warning("Restoring checkpoint at start of run")
             step = self.ckpt_mgr.latest_step()
