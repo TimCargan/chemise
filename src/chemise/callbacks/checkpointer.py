@@ -58,7 +58,7 @@ class Checkpointer(Callback):
     def on_train_batch_end(self, trainer: BasicTrainer):
         self._step_count += 1 # Use of an internal step count to Dev to Host call
         if ((self.intra_train_freq and self._step_count % self.intra_train_freq == 0) or
-                (self.intra_train_freq_time and (datetime.datetime.now() - self._last_ckpt_time) > self.intra_train_freq_time)):
+                (self.intra_train_freq_time and datetime.datetime.now() - self._last_ckpt_time > self.intra_train_freq_time)):
             self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
