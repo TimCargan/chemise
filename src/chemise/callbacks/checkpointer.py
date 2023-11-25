@@ -24,6 +24,7 @@ class Checkpointer(Callback):
     keep_every_n_steps: int = None
     keep_time_interval: datetime.timedelta = None
     intra_train_freq: int = None
+    intra_train_freq_time: datetime.timedelta = None
     auto_restore: bool = False  # Restore the most recent ckpt when training begins
     keep_epoch_steps: bool = False  # Keep the step number for every epoch
     epoch_keep_period: int = None  # Freq of epoch steps save
@@ -32,6 +33,7 @@ class Checkpointer(Callback):
     _step_count: int = 0
     _epoch: int = 0
     _save_args = None  # A mapping to let the checkpoint manager know how to compress the ckpt
+    _last_ckpt_time = None
 
     def __post_init__(self):
         mgr_options = orbax.checkpoint.CheckpointManagerOptions(
@@ -46,6 +48,7 @@ class Checkpointer(Callback):
     def on_fit_start(self, trainer: BasicTrainer):
         # Set the save args on fit begin to reduce the number of calls
         self._save_args = orbax_utils.save_args_from_target(trainer.state)
+        self.last_ckpt_time = datetime.datetime.now()
         if self.auto_restore:
             logging.warning("Restoring checkpoint at start of run")
             step = self.ckpt_mgr.latest_step()
@@ -54,7 +57,8 @@ class Checkpointer(Callback):
 
     def on_train_batch_end(self, trainer: BasicTrainer):
         self._step_count += 1 # Use of an internal step count to Dev to Host call
-        if self.intra_train_freq and self._step_count % self.intra_train_freq == 0:
+        if ((self.intra_train_freq and self._step_count % self.intra_train_freq == 0) or
+                (self.intra_train_freq_time and (datetime.datetime.now() - self._last_ckpt_time) > self.intra_train_freq_time)):
             self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
@@ -78,6 +82,7 @@ class Checkpointer(Callback):
     def save(self, trainer: BasicTrainer, force: bool = False):
         step = int(jnp.max(trainer.state.step))
         self.ckpt_mgr.save(step, trainer.state, save_kwargs={'save_args': self._save_args}, force=force)
+        self._last_ckpt_time = datetime.datetime.now()
 
     @staticmethod
     def restore(trainer: BasicTrainer, ckpt_dir: Path | str, step_prefix: str = "ckpt", use_restore_kwargs: bool = True):
