@@ -28,6 +28,7 @@ class Checkpointer(Callback):
     auto_restore: bool = False  # Restore the most recent ckpt when training begins
     keep_epoch_steps: bool = False  # Keep the step number for every epoch
     epoch_keep_period: int = None  # Freq of epoch steps save
+    epoch_max_to_keep: int = 1  # Number of epoch steps to keep
     save_epochs: bool = True  # Save epochs as their own checkpoints with a prefix epoch
     save_ckpt_on_epoch_end: bool = True  # Save a step ckpt on epoch end
     _step_count: int = 0
@@ -43,7 +44,9 @@ class Checkpointer(Callback):
         self.ckpt_mgr = orbax.checkpoint.CheckpointManager(self.ckpt_dir, self.checkpointer, mgr_options)
 
         epoch_dir = f"{self.ckpt_dir}/epoch"
-        mgr_options = orbax.checkpoint.CheckpointManagerOptions(create=True, keep_period=self.epoch_keep_period, step_prefix='epoch')
+        mgr_options = orbax.checkpoint.CheckpointManagerOptions(create=True,
+                                                                max_to_keep=self.epoch_max_to_keep,
+                                                                keep_period=self.epoch_keep_period, step_prefix='epoch')
         self.epoch_ckpt_mgr = orbax.checkpoint.CheckpointManager(epoch_dir, self.checkpointer, mgr_options)
 
     def set_step_number(self, step: int):
