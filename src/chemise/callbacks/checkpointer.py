@@ -61,6 +61,7 @@ class Checkpointer(Callback):
             step = self.ckpt_mgr.latest_step()
             trainer.state = self.ckpt_mgr.restore(step, items=trainer.state)
             self.set_step_number(int(jnp.max(trainer.state.step)))
+            self._epoch = self.epoch_ckpt_mgr.latest_step() + 1 if self.epoch_ckpt_mgr.latest_step() else 0
 
     def on_train_batch_end(self, trainer: BasicTrainer):
         self._step_count += 1 # Use of an internal step count to Dev to Host call
