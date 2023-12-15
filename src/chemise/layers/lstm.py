@@ -1,7 +1,7 @@
 import functools
-
 import jax.numpy as jnp
 from flax import linen as nn
+from typing import Sequence
 
 
 class SimpleLSTM(nn.Module):
@@ -23,7 +23,17 @@ class SimpleLSTM(nn.Module):
         split_rngs={'params': False})
     @nn.compact
     def __call__(self, carry, x):
-        carry, x = self.cell(carry, x)
+        if isinstance(self.cell, Sequence):
+            # Call cell 1
+            _c, x = self.cell[0](carry[0], x)
+            _carry = [_c]  # Make a new list to hold the carry
+            for i, c in enumerate(self.cell[1:]):
+                _c, x = c(carry[i+1], x)
+                _carry.append(_c)
+            carry = _carry  # Update carry with the new list
+        else:
+            carry, x = self.cell(carry, x)
+
         return carry, x
 
 
@@ -63,8 +73,19 @@ class AutoregLSTM(nn.Module):
     def __call__(self, carry_pred, x):
         carry, past_pred = carry_pred
         in_x = jnp.concatenate([x, past_pred], axis=-1)
-        carry, y = self.cell(carry, in_x)
-        y = self.output_layer(y)
+
+        if isinstance(self.cell, Sequence):
+            # Call cell 1
+            _c, x = self.cell[0](carry[0], in_x)
+            _carry = [_c]  # Make a new list to hold the carry
+            for i, c in enumerate(self.cell[1:]):
+                _c, x = c(carry[i + 1], x)
+                _carry.append(_c)
+            carry = _carry  # Update carry with the new list
+        else:
+            carry, x = self.cell(carry, in_x)
+
+        y = self.output_layer(x)
         return (carry, y), y
 
 

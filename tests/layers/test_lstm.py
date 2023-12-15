@@ -1,9 +1,11 @@
-from absl.testing import absltest
-from absl.testing import parameterized
+import flax.linen as nn
 import jax
 import jax.test_util
 import numpy as np
 import flax.linen as nn
+from absl.testing import absltest, parameterized
+
+
 import chemise.layers.lstm as lstm
 
 # Parse absl flags test_srcdir and test_tmpdir.
