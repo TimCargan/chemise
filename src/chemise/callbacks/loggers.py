@@ -1,8 +1,7 @@
-from dataclasses import dataclass
-
 import jax.numpy as jnp
 import mlflow
 from absl import flags, logging
+from dataclasses import dataclass
 
 from chemise.callbacks.abc_callback import Callback
 from chemise.utils import list_dict_to_dict_list
@@ -50,7 +49,7 @@ class Mlflow(Callback):
     def shape(met: list[dict]) -> dict:
         # Swap dict of list and then reduce mean
         met = list_dict_to_dict_list(met)
-        met = {k: list(jnp.nanmean(jnp.stack(v, axis=0), axis=0)) for k, v in met.items()}
+        met = {k: jnp.nanmean(jnp.stack(v, axis=0), axis=0).reshape((-1,)) for k, v in met.items()}
         # add a counter to the metric for vector runs
         met = {f"{k}_{i}" if i > 0 else k: float(v) for k, lv in met.items() for i, v in enumerate(lv)}
         return met
