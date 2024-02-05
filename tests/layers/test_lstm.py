@@ -1,4 +1,3 @@
-import flax.linen as nn
 import jax
 import jax.test_util
 import numpy as np
@@ -20,11 +19,14 @@ class LstmTest(parameterized.TestCase):
         seq_len = 3
         embedding_size = 4
         hidden_size = 5
-        cell = nn.OptimizedLSTMCell()
-        model = lstm.SimpleLSTM(cell=cell)
-        rng = jax.random.PRNGKey(0)
+
+        rng = jax.random.key(0)
         inputs = np.random.RandomState(0).normal(size=[batch_size, seq_len, embedding_size])
-        initial_state = cell.initialize_carry(rng, (batch_size,), hidden_size)
+
+        cell = nn.OptimizedLSTMCell(features=hidden_size)
+        initial_state = cell.initialize_carry(rng, inputs[:, 0].shape)
+        model = lstm.SimpleLSTM(cell=cell)
+
         (_, output), _ = model.init_with_output(rng, initial_state, inputs)
         self.assertEqual((batch_size, seq_len, hidden_size), output.shape)
 

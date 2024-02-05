@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+from typing import Callable
 
 import jax
 import numpy as np
@@ -14,6 +15,7 @@ class Spec:
 
 
 class Data(abc.ABC):
+    """Mirror the interface for a tf.data.Dataset object but in pure python. As we move away from the TF dependency."""
     @abc.abstractmethod
     def cardinality(self) -> int:
         """Return the cardinality of the data set, if unknown return -1."""
@@ -26,6 +28,14 @@ class Data(abc.ABC):
     @abc.abstractmethod
     def as_numpy_iterator(self) -> iter:
         """Return an iterator that yields numpy data"""
+
+    @abc.abstractmethod
+    def take(self, n: int) -> Data:
+        """Take the first n elements"""
+
+    @abc.abstractmethod
+    def map(self, f: Callable, *args, **kwargs) -> Data:
+        """Map the function f over elements of the dataset"""
 
 
 class ListData(Data):

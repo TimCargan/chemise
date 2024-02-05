@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from absl import logging
 import jax
 import numpy as np
 
@@ -108,3 +109,17 @@ def get_batch_size(ds, batch_dims=1) -> int:
     bds = get_batch_dims(ds, batch_dims)
     batch_size = np.prod(bds)
     return int(batch_size)
+
+
+def add_device_batch(data):
+    """Add a new batch dim to a dataset where new dim = # of GPUs
+
+    :param data: a tfd.Dataset
+    :return: A re-batched dataset
+    """
+    platform = jax.default_backend()
+    d_count = jax.device_count(platform)
+    logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
+    logging.debug("Adding device batch of size (%d) to dataset: %s", d_count, data.element_spec)
+    data = data.batch(d_count, drop_remainder=True).prefetch(2)
+    return data

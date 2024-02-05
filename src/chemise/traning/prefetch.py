@@ -7,9 +7,10 @@ from typing import Any, Callable
 
 import jax
 import numpy as np
-import tensorflow as tf
 from absl import flags, logging
+from einops import rearrange
 
+from chemise.data import Data
 from chemise.utils import get_batch_dims
 
 flags.DEFINE_boolean("prefetch_pack", default=False, help="Pack items when prefetch to reduce number of H2D mem-copy calls")
@@ -41,7 +42,7 @@ class Packer:
         :return: 
         """""
         flat, _ = jax.tree_util.tree_flatten(t)
-        packed = [tf.stack([flat[i] for i in idx]) for dim, idx in self.sizes.items()]
+        packed = [rearrange([flat[i] for i in idx], "... -> ...") for dim, idx in self.sizes.items()]
         return packed
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,))
@@ -63,7 +64,7 @@ class Prefetch:
     """
     Prefetch onto the GPU(s), data is compacted to reduce the number of H2D ops
     """
-    def __init__(self, data: tf.data.Dataset, buffer_size: int = 3, batch_dims: int = 1, train: bool = True,
+    def __init__(self, data: Data, buffer_size: int = 3, batch_dims: int = 1, train: bool = True,
                  on_dev_shape: Callable[[Any, int, bool], list[Any]] = None):
         super(Prefetch, self).__init__()
         self.train = train
@@ -74,7 +75,8 @@ class Prefetch:
 
         first = self.data_raw.element_spec
         self.packer = Packer(first)
-        self.data_packed = self.data_raw.map(self.packer.pack, num_parallel_calls=tf.data.AUTOTUNE)
+        # tf.data.AUTOTUNE == -1, this is to support the move away from tf.data as a core dep
+        self.data_packed = self.data_raw.map(self.packer.pack, num_parallel_calls=-1)
 
         batch_dim_size = get_batch_dims(first, batch_dims=batch_dims)
         platform = jax.default_backend()

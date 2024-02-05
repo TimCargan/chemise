@@ -15,11 +15,10 @@ from jaxtyping import Array, Bool, Num
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
-from tensorflow import data as tfd  # Only for typing
 from typing import Any, Callable, Iterator, List, Tuple
 
 from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
-# from flax.training import dynamic_scale as dynamic_scale_lib
+from chemise.data import Data
 from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
 from chemise.utils import get_batch_size, make_metric_string, mean_reduce_dicts, seconds_pretty
@@ -35,7 +34,7 @@ Result = dict[str, Num[Array, ""]]
 State_Result = Tuple[TrainState, Result]
 Features = dict[str, Num[Array, "..."]]
 Input = Features | Num[Array, "..."]
-Batch = Tuple[Features, Features] | Tuple[Features, Features, Bool[Array, "..."]]
+Batch = tuple[Features, Features] | tuple[Features, Features, Bool[Array, "..."]]
 Rand_Dict = dict[str, jax.random.PRNGKeyArray]
 P_Func = Callable[[TrainState, Batch, Rand_Dict], State_Result]
 
@@ -53,13 +52,6 @@ def make_default_layout() -> Layout:
     return layout
 
 
-def add_device_batch(data: tfd.Dataset) -> tfd.Dataset:
-    platform = jax.default_backend()
-    d_count = jax.device_count(platform)
-    logging.log_first_n(logging.INFO, "Running on %s with %d devices", 1, platform, d_count)
-    logging.debug("Adding device batch of size (%d) to dataset: %s", d_count, data.element_spec)
-    data = data.batch(d_count, drop_remainder=True).prefetch(2)
-    return data
 
 
 @jax.jit
@@ -139,7 +131,7 @@ class BasicTrainer:
     metrics_fn: Callable[[Input, Input], Result] = struct.field(default=no_metrics_fn, pytree_node=False)
     callbacks: [Callback] = struct.field(default_factory=list, compare=False, pytree_node=False)
     train_hist: dict[str, list[Any]] = struct.field(default_factory=empty_train_hist, compare=False, pytree_node=False)
-    train_window: Layout = struct.field(default_factory=make_default_layout, compare=False, pytree_node=False)
+    train_window: Layout = struct.field(default=None, compare=False, pytree_node=False)
 
     on_dev_shape: Callable[[Batch, int, bool], list[Batch]] = struct.field(default=no_on_dev_shape, pytree_node=False)
 
@@ -217,7 +209,6 @@ class BasicTrainer:
         return self._step(params, batch, rngs, train, global_batch)
 
     @partial(jax.pmap, static_broadcasted_argnums=(0,), donate_argnums=(1,), axis_name="batch")
-    # @partial(jax.vmap, in_axis=(None,0 , 0, 0), axis_name="batch")
     def p_train_step(self, state: TrainState, batch: Batch, rngs: Rand_Dict) -> State_Result:
         """
         Train for a single step. This has a pmap so will use all GPUs
@@ -367,7 +358,7 @@ class BasicTrainer:
         callback.end_cb(self)
 
     @staticmethod
-    def get_first_el(data: tfd.Dataset):
+    def get_first_el(data: Data):
         first = next(data.take(1).as_numpy_iterator())
         return first
 
@@ -401,7 +392,7 @@ class BasicTrainer:
         self.state, metrics = unreplicate((r_state, metrics))
         return metrics
 
-    def fit(self, train_data: tfd.Dataset, val_data: tfd.Dataset = None, num_epochs: int = 1):
+    def fit(self, train_data: Data, val_data: Data = None, num_epochs: int = 1):
         """
         Fit model to a given dataset
         :param train_data: data to fit the model to
@@ -495,13 +486,14 @@ class BasicTrainer:
 
     def epoc_metrics(self):
         # TODO: Maybe move this to a logging callback
+        logging.info(f"Opt Step: {self.state.step}")
         mean_train = mean_reduce_dicts(self.train_hist["epochs"][-1]["train"])
         mean_test = mean_reduce_dicts(self.train_hist["epochs"][-1]["test"])
         mean_test = {f"val_{k}": v for k, v in mean_test.items()}  # Add `val` prefix to test metrics
         mets = dict(**mean_train, **mean_test)
         return mets
 
-    def map_model(self, data: tfd.Dataset) -> Iterator[Tuple[Features, ...]]:
+    def map_model(self, data: Data) -> Iterator[Tuple[Features, ...]]:
         """
         Map the model over the dataset
         Transforming it to include predictions
@@ -528,7 +520,7 @@ class BasicTrainer:
             yield self.p_apply_step(_r_state, batch, _rngs, c)
             c += 1
 
-    def eval_model(self, data: tfd.Dataset):
+    def eval_model(self, data: Data):
         """
         Map the model over the dataset
         Transforming it to include predictions
@@ -565,7 +557,7 @@ class BasicTrainer:
         :return:
         """
         rngs = self._make_rngs()
-        return self._j__call__(x, rngs, self.state.params, train=train, **kwargs)
+        return self._j__call__(x, rngs, self.state.params, train, **kwargs)
 
     @partial(jax.jit, static_argnums=(0, 4), static_argnames=("train",))
     def _j__call__(self, x, rngs, params, train=False, **kwargs):

@@ -9,3 +9,6 @@ chex
 setuptools
 plotext
 rich >= 12.4
+
+#The tests
+tensorflow

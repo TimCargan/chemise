@@ -1,8 +1,9 @@
 import jax.numpy as jnp
 import jax.test_util
 import numpy as np
-import utils
 from absl.testing import parameterized
+
+import chemise.utils as utils
 
 # Parse absl flags test_srcdir and test_tmpdir.
 jax.config.parse_flags_with_absl()

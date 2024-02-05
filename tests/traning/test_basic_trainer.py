@@ -22,8 +22,17 @@ def mse(y_true, y_pred):
 def metrics(y_true, y_pred):
     center = optax.l2_loss(y_pred, y_true["y"]).mean()
     return {"met": center}
+
+class Model(nn.Module):
+    """Very basic dummy model"""
+    @nn.compact
+    def __call__(self, x, train=False):
+        m = nn.Sequential([MLP(depth=1, width=16, key="x"), nn.Dense(1)])
+        return m(x)
+
+
 def make_runner():
-    m = nn.Sequential([MLP(depth=1, width=16, key="x"), nn.Dense(1)])
+    m = Model()
     rng = jax.random.PRNGKey(0)
     rng, _ = jax.random.split(rng)
     data = {"x": np.zeros((1, 20))}
@@ -87,7 +96,7 @@ class BasicTrainer_SanityCheck_Tests(parameterized.TestCase):
 
     def test_non_dict(self):
         # All bad
-        ds = (self.zero_in, self.zero_l["l"])
+        ds = (self.zero_in, self.zero_l)
         good, in_dict = basic_trainer._sanity_check(ds)
         self.assertFalse(good)
         expect = {"I_a": np.array(0), "I_b": np.array(0), "I_c": np.array(0), "O_l": np.array(0)}
