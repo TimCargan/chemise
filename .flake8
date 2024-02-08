@@ -1,0 +1,12 @@
+[flake8]
+ignore = E501,N812,F821,F722
+docstring-convention = google
+per-file-ignores =
+    # Ignore imported but unused in __init__ files
+    __init__.py:F401,
+    # Ignore setup.py issues
+    setup.py:D100
+    # Test code specific rules
+    # Ignore assert issues in test_* files
+    # Ignore import * for fixtures
+    test_*.py:SCS108
