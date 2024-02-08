@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from math import floor
-from typing import TYPE_CHECKING
-
 import numpy as np
 import plotext as plt
+from dataclasses import dataclass
 from einops import reduce
+from math import floor
 from rich.ansi import AnsiDecoder
 from rich.console import Group
 from rich.jupyter import JupyterMixin
 from rich.panel import Panel
+from typing import TYPE_CHECKING
 
 from chemise.callbacks.abc_callback import Callback
 from chemise.utils import list_dict_to_dict_list
@@ -18,8 +17,8 @@ from chemise.utils import list_dict_to_dict_list
 if TYPE_CHECKING:
     from chemise.traning.basic_trainer import BasicTrainer
 
-
 decoder = AnsiDecoder()
+
 
 class PlotexMixin(JupyterMixin):
 
@@ -42,6 +41,7 @@ class PlotexMixin(JupyterMixin):
             self.re_draw = False
         yield self.rich_canvas
 
+
 def make_line_plot(width, height, title="", xs=None, ys=None):
     plt.clf()
     plt.title(title)
@@ -50,7 +50,7 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
     y = []
     for n, y in ys.items():
         y = reduce(np.array(y), "s ... -> s", reduction="mean")
-        limit = max(floor(len(y) * 0.9), 10) # 10 or the last 90% of the elements
+        limit = max(floor(len(y) * 0.9), 10)  # 10 or the last 90% of the elements
         min_v = v if (v := np.min(y[-limit:])) < min_v else min_v
         max_v = v if (v := np.max(y[-limit:])) > max_v else max_v
         plt.plot(y, label=n)
@@ -59,6 +59,7 @@ def make_line_plot(width, height, title="", xs=None, ys=None):
     if len(y) > 10:
         plt.ylim(min_v, max_v)
     return plt.build()
+
 
 @dataclass
 class Line(Callback):
@@ -74,8 +75,3 @@ class Line(Callback):
     def on_epoch_end(self, trainer: BasicTrainer):
         ys = list_dict_to_dict_list(trainer.train_hist["train"])
         self.plotter.update(ys=ys)
-
-
-
-
-

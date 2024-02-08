@@ -1,14 +1,14 @@
+"""Orbax checkpointing callbacks."""
 from __future__ import annotations
 
 import datetime
-from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING
-
 import orbax.checkpoint
 from absl import logging
+from dataclasses import dataclass
 from flax.training import orbax_utils
 from jax import numpy as jnp
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from chemise.callbacks.abc_callback import Callback
 
@@ -18,6 +18,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class Checkpointer(Callback):
+    """Checkpointer callbacks.
+
+    Checkpoints can be saved at a set interval every trains step and at the end of each epoch.
+
+    Args:
+        ckpt_dir: Directory to save checkpoint into
+        keep: Number of checkpoints to keep
+
+    """
     ckpt_dir: str
     keep: int = 1
     overwrite: bool = False
@@ -37,6 +46,7 @@ class Checkpointer(Callback):
     _last_ckpt_time = None
 
     def __post_init__(self):
+        """Initialise the checkpointer objects."""
         mgr_options = orbax.checkpoint.CheckpointManagerOptions(
             create=True, max_to_keep=self.keep, keep_time_interval=self.keep_time_interval,
             keep_period=self.keep_every_n_steps, step_prefix='ckpt')
@@ -50,9 +60,19 @@ class Checkpointer(Callback):
         self.epoch_ckpt_mgr = orbax.checkpoint.CheckpointManager(epoch_dir, self.checkpointer, mgr_options)
 
     def set_step_number(self, step: int):
+        """Set step number.
+
+        Args:
+            step: Step number
+        """
         self._step_count = step
 
     def on_fit_start(self, trainer: BasicTrainer):
+        """Set up the checkpointer and auto restore if set.
+
+        Args:
+            trainer: The trainer object
+        """
         # Set the save args on fit begin to reduce the number of calls
         self._save_args = orbax_utils.save_args_from_target(trainer.state)
         self._last_ckpt_time = datetime.datetime.now()
@@ -64,13 +84,23 @@ class Checkpointer(Callback):
             self._epoch = self.epoch_ckpt_mgr.latest_step() + 1 if self.epoch_ckpt_mgr.latest_step() else 0
 
     def on_train_batch_end(self, trainer: BasicTrainer):
-        self._step_count += 1 # Use of an internal step count to Dev to Host call
-        if ((self.intra_train_freq and self._step_count % self.intra_train_freq == 0) or
+        """Save in training checkpoints.
+
+        Args:
+            trainer: The training object
+
+        """
+        self._step_count += 1  # Use of an internal step count to Dev to Host call
+        if ((self.intra_train_freq and self._step_count % self.intra_train_freq == 0) or  # noqa: W504
                 (self.intra_train_freq_time and datetime.datetime.now() - self._last_ckpt_time > self.intra_train_freq_time)):
             self.save(trainer)
 
     def on_epoch_end(self, trainer: BasicTrainer):
+        """Save epoch end checkpoints.
 
+        Args:
+            trainer: The trainer object
+        """
         if self.keep_epoch_steps:
             # This is a hack and I should find a better way
             step = int(jnp.max(trainer.state.step))
@@ -85,12 +115,27 @@ class Checkpointer(Callback):
         self._epoch += 1
 
     def save(self, trainer: BasicTrainer, force: bool = False):
+        """Save checkpoint.
+
+        Args:
+            trainer: The trainer object to save state
+            force: Force save of the checkpoint
+
+        """
         step = int(jnp.max(trainer.state.step))
         self.ckpt_mgr.save(step, trainer.state, save_kwargs={'save_args': self._save_args}, force=force)
         self._last_ckpt_time = datetime.datetime.now()
 
     @staticmethod
     def restore(trainer: BasicTrainer, ckpt_dir: Path | str, step_prefix: str = "ckpt", use_restore_kwargs: bool = True):
+        """Restore checkpoint back into a trainer object.
+
+        Args:
+            trainer: Trainer object to restore state too
+            ckpt_dir: Path to checkpoint
+            step_prefix: step prefix
+            use_restore_kwargs: To use restore kwargs
+        """
         print(f"Restore from {ckpt_dir}")
         logging.warning(f"Restore from {ckpt_dir}")
         ckpter = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
