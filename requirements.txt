@@ -4,11 +4,11 @@ jax
 jaxtyping
 einops
 flax
-orbax
+orbax-checkpoint
 chex
 setuptools
 plotext
 rich >= 12.4
 
-#The tests
+#Need for the tests
 tensorflow
