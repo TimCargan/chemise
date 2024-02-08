@@ -17,7 +17,7 @@ from rich.layout import Layout
 from rich.live import Live
 from typing import Any, Callable, Iterator, List, Tuple
 
-from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback
+from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback, EarlyStopping
 from chemise.data import Data
 from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
@@ -476,8 +476,12 @@ class BasicTrainer:
             duration = seconds_pretty(duration)
             logging.info(f"Epoch: {e} - {duration}  {met}")
 
-            # End of epoch callbacks
-            callbacks.on_epoch_end(self)
+            try:
+                # End of epoch callbacks
+                callbacks.on_epoch_end(self)
+            except EarlyStopping:
+                logging.info("A callback called early stopping")
+                break
 
         callbacks.on_fit_end(self)
         if self.train_window:

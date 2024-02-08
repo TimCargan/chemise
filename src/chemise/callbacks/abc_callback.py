@@ -4,10 +4,17 @@ from typing import Callable, Any
 
 CallbackFn = Callable[[Any], None]
 
+
+class EarlyStopping(Exception):
+    """Exception to raise if early stopping is needed"""
+    pass
+
+
 class Callback(ABC):
     """
     Abstract base class used to build new callbacks.
     """
+
     def set_step_number(self, step: int):
         """
         Set the current step number, called once at the beginning of a fit
@@ -45,11 +52,13 @@ class Callback(ABC):
         Called at the end of every epoch
         :param trainer:
         :return:
+        :raises: EarlyStopping if early stopping is needed
         """
         pass
 
     def on_train_start(self, trainer):
         pass
+
     def on_train_end(self, trainer):
         pass
 
@@ -103,6 +112,7 @@ class StepCallback:
     def end_cb(self, trainer):
         pass
 
+
 @dataclass
 class CallbackRunner:
     callbacks: list[Callback]
@@ -124,8 +134,18 @@ class CallbackRunner:
             cb.on_epoch_start(trainer)
 
     def on_epoch_end(self, trainer):
+        """Run the end of epoch callbacks.
+         On epoch end supports the early stopping using the python exception framework and EarlyStopping exception.
+         """
+        early_stopping = None
         for cb in self.callbacks:
-            cb.on_epoch_end(trainer)
+            try:
+                cb.on_epoch_end(trainer)
+            except EarlyStopping as es:
+                early_stopping = True
+                # TODO: Add some logic to pass messages up the stack for better logging / debugging
+        if early_stopping:
+            raise EarlyStopping
 
     def on_train_start(self, trainer):
         for cb in self.callbacks:
