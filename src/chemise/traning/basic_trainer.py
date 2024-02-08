@@ -17,7 +17,7 @@ from rich.layout import Layout
 from rich.live import Live
 from typing import Any, Callable, Iterator, List, Tuple
 
-from chemise.callbacks.abc_callback import Callback, CallbackRunner, StepCallback, EarlyStopping
+from chemise.callbacks.abc_callback import Callback, CallbackRunner, EarlyStopping, StepCallback
 from chemise.data import Data
 from chemise.traning.dynamic_scale import DynamicScale  # Use this since scale is crashing to 0
 from chemise.traning.prefetch import Prefetch
@@ -244,6 +244,7 @@ class BasicTrainer:
             step = jax.value_and_grad(self._j_step, has_aux=True)
             (loss, y_pred), grads = step(state.params, batch, rngs, train=True, global_batch=GLOBAL_BATCH)
             grads = jax.lax.psum(grads, axis_name="batch")
+            grads = jax.tree_map(lambda l: jnp.nan_to_num(l), grads)  # Need to think about this
 
         new_state = state.apply_gradients(grads=grads)
         metrics = dict(loss=loss, **self.metrics_fn(y, y_pred))
