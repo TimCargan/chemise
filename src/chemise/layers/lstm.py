@@ -1,7 +1,10 @@
 import functools
 import jax.numpy as jnp
 from flax import linen as nn
-from typing import Sequence
+from typing import Any, Sequence, Tuple
+
+State = Any
+Value = Any
 
 
 class SimpleLSTM(nn.Module):
@@ -15,29 +18,43 @@ class SimpleLSTM(nn.Module):
         _, forward_outputs = SimpleLSTM()(initial_state, inputs)
     """
     cell: nn.OptimizedLSTMCell = None
+    res_con: bool = False
 
-    @functools.partial(
-        nn.transforms.scan,
-        variable_broadcast='params',
-        in_axes=1, out_axes=1,
-        split_rngs={'params': False})
-    @nn.compact
-    def __call__(self, carry, x):
+    def lstm_step_call(self, carry, x) -> Tuple[State, Value]:
+        """ A single step of the LSTM
+        Args:
+            carry: carry state
+            x: value of function
+
+        Returns:
+
+        """
         if isinstance(self.cell, Sequence):
             # Call cell 1
             _c, x = self.cell[0](carry[0], x)
             _carry = [_c]  # Make a new list to hold the carry
             for i, c in enumerate(self.cell[1:]):
-                _c, x = c(carry[i+1], x)
+                _c, _x = c(carry[i+1], x)
+                # Residual connection,
+                if self.res_con:
+                    x = _x + x
                 _carry.append(_c)
             carry = _carry  # Update carry with the new list
         else:
             carry, x = self.cell(carry, x)
 
         return carry, x
+    @functools.partial(
+        nn.transforms.scan,
+        variable_broadcast='params',
+        in_axes=1, out_axes=1,
+        split_rngs={'params': False})
+    @nn.compact
+    def __call__(self, carry, x) -> Tuple[State, Value]:
+        return self.lstm_step_call(carry, x)
 
 
-class AutoregLSTM(nn.Module):
+class AutoregLSTM(SimpleLSTM):
     """
     Autoreg LSTM, uses the output of the previous time step as a feature the input for the next.
     E.g
@@ -73,18 +90,9 @@ class AutoregLSTM(nn.Module):
     def __call__(self, carry_pred, x):
         carry, past_pred = carry_pred
         in_x = jnp.concatenate([x, past_pred], axis=-1)
-
-        if isinstance(self.cell, Sequence):
-            # Call cell 1
-            _c, x = self.cell[0](carry[0], in_x)
-            _carry = [_c]  # Make a new list to hold the carry
-            for i, c in enumerate(self.cell[1:]):
-                _c, x = c(carry[i + 1], x)
-                _carry.append(_c)
-            carry = _carry  # Update carry with the new list
-        else:
-            carry, x = self.cell(carry, in_x)
-
+        # Call the LSTM block as normal
+        carry, x = self.lstm_step_call(carry, in_x)
+        # Apply the MLP so that input -> output shapes patch
         y = self.output_layer(x)
         return (carry, y), y
 
