@@ -77,7 +77,7 @@ def main(argv):
         m.train_window = make_default_layout()
         prog_bar = ProgressBar(update_metric_freq=3)
         prof = Profile(profile_dir=FLAGS.output_dir, steps=(200, 205))
-        kb = KeepBest(patience_steps=21)
+        kb = KeepBest(patience_steps=21, replace=True)
         m.callbacks = [graph, prog_bar, prof, kb]
         m.fit(d, num_epochs=100, val_data=t)
         return
