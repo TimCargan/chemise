@@ -123,5 +123,4 @@ class ListData(Data):
             yield x
 
     def map(self, f, *args, **kwargs):
-        print("Warning: you called map")
         return ListData(list(map(f, self.data)), self.add_batch_dim)
