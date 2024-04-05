@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from absl import logging
 import jax
 import numpy as np
+from absl import logging
 
 
 def make_metric_string(metrics: dict[str, str | np.ndarray | float], precision=4) -> str:
@@ -73,13 +73,13 @@ def datasetspec_to_zero(ds, batch_size: int = None, force_size: bool = False):
     :param force_size: Overwrite the batch size
     :return:
     """
-    import tensorflow as tf
+    # import tensorflow as tf
     def make_zero(el):
         shape = el.shape
         shape = shape[0] if (shape[0] and force_size) else batch_size, *shape[1:]
         dtype = el.dtype
-        if isinstance(dtype, tf.dtypes.DType):
-            dtype = el.dtype.as_numpy_dtype
+        # if isinstance(dtype, tf.dtypes.DType):
+        #     dtype = el.dtype.as_numpy_dtype
         return np.zeros(shape=shape, dtype=dtype)
 
     return jax.tree_util.tree_map(make_zero, ds)

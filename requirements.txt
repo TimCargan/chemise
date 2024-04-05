@@ -11,4 +11,5 @@ plotext
 rich >= 12.4
 
 #Need for the tests
+#TODO: remove as a dep from the tests
 tensorflow
