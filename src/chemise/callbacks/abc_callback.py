@@ -14,6 +14,15 @@ class EarlyStopping(Exception):  # noqa: N818
 
 class Callback(ABC):  # noqa: B024
     """Abstract base class used to build new callbacks."""
+    _step_number: int = None
+
+    def set_step_number(self, step: int):
+        """Set the current step number.
+
+        Args:
+            step: The current step number
+        """
+        self._step_number = step
 
     def on_fit_start(self, trainer):  # noqa: B027
         """Called once at the start of training, e.g at the start of `BasicTrainer.fit`.
@@ -166,6 +175,15 @@ class CallbackRunner:
         callbacks: The list of callbakcs
     """
     callbacks: list[Callback]
+
+    def set_step_number(self, step: int):
+        """Set the step number for all callbacks
+
+        Args:
+            step: The step number
+        """
+        for cb in self.callbacks:
+            cb.set_step_number(step)
 
     def on_fit_start(self, trainer):
         """Call all `on_fit_start` callbacks.
