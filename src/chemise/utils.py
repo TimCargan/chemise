@@ -16,8 +16,9 @@ def make_metric_string(metrics: dict[str, str | np.ndarray | float], precision=4
     def value_format(v):
         if isinstance(v, str):
             return v
-        if isinstance(v, np.ndarray):
-            return [value_format(x) for x in v]
+        if isinstance(v, (np.ndarray, jax.Array)):
+            if len(v.shape) > 0:
+                return [value_format(x) for x in v]
         try:
             fv = float(v)
             return f"{fv:.{precision}}"
