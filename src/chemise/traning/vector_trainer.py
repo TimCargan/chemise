@@ -33,14 +33,16 @@ class VectorTrainer(BasicTrainer):
         Notes:
             In order to keep this a pure function, we don't update the `self.state` just return a new state
         """
-        mask = jnp.any(s[0]) if (s := batch[3:4]) else True
+        if s := batch[3:4]:
+            mask = jnp.any(s[0])
+            state, metrics = lax.cond(mask,
+                                      lambda s: self._p_train_step(s, batch, rngs),
+                                      lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
+                                                         **self.metrics_fn(batch[1], np.NAN)))
+                                      , state)
 
-        state, metrics = lax.cond(mask,
-                                  lambda s: self._p_train_step(s, batch, rngs),
-                                  lambda s: (s, dict(loss=self.loss_fn(batch[1], np.NAN).sum(),
-                                                     **self.metrics_fn(batch[1], np.NAN)))
-                                  , state)
-
+        else:
+            state, metrics = self._p_train_step(state, batch, rngs)
         # new_state, metrics = self._p_train_step(state, batch, rngs)
         # mask = jnp.any(s[0]) if (s := batch[2:3]) else True
         # new_state = lax.cond(mask, lambda on: on[0], lambda on: on[1], (new_state, state))
