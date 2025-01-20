@@ -47,7 +47,6 @@ class KeepBest(Callback):
         if self.reset_on_start:
             # Resets the best value and patience counter so the callback can be reused
             self.best_value = None
-            self.patience_steps = 0
 
     @partial(jax.jit, static_argnums=(0,), donate_argnums=(1, 3, 5))
     def _eval(self, best_value, cur_value, best_state, cur_state, early_stop_mask):
