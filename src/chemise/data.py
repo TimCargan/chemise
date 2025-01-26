@@ -5,6 +5,8 @@ The data loading interface and, ListData simple data implementation for wrapping
 """
 from __future__ import annotations
 
+import random
+
 import abc
 import dataclasses
 import jax
@@ -79,7 +81,7 @@ class Data(abc.ABC):
 class ListData(Data):
     """A simple implementation of the interface `Data` for use with python lists."""
 
-    def __init__(self, data: list, add_batch_dim: bool = False):
+    def __init__(self, data: list, add_batch_dim: bool = False, shuffle_each_iter: bool = False):
         """Create a new list data object.
 
         Args:
@@ -88,6 +90,7 @@ class ListData(Data):
         """
         self.data = data
         self.add_batch_dim = add_batch_dim
+        self.shuffle_each_iter = shuffle_each_iter
 
     def cardinality(self) -> int:
         """Get the cardinality of the dataset."""
@@ -119,8 +122,11 @@ class ListData(Data):
 
     def as_numpy_iterator(self):
         """Create an ittrator """
-        for x in self.data:
-            yield x
+        sample_iter = range(len(self.data))
+        if self.shuffle_each_iter:
+            sample_iter = random.sample(sample_iter, len(self.data))
+        for idx in sample_iter:
+            yield self.data[idx]
 
     def map(self, f, *args, **kwargs):
         return ListData(list(map(f, self.data)), self.add_batch_dim)
