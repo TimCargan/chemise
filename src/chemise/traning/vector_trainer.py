@@ -108,3 +108,20 @@ class VectorTrainer(BasicTrainer):
     @partial(jax.vmap, in_axes=(None, 1, None, 0, None), out_axes=1)
     def _j__call__(self, x, rngs, params, train=False, **kwargs):
         return self.state.apply_fn({'params': params}, x, rngs=rngs, train=train, **kwargs)
+
+    ## Helper methods to use the vector wrapper for model parallelism
+
+    @partial(jax.jit, static_argnums=(0, 4), static_argnames=("train",))
+    @partial(jax.vmap, in_axes=(None, None, None, 0, None), out_axes=0)
+    def _j_pm__call__(self, x, rngs, params, train=False, **kwargs):
+        return self.state.apply_fn({'params': params}, x, rngs=rngs, train=train, **kwargs)
+
+    def mp_call(self, x, train=False, **kwargs):
+        """
+        A stateful call to the vector model(s) but broadcast the data (model parallelism) and output on dim 0
+        :param x: data to pass to the model
+        :param kwargs: other arguments to pass to the model
+        :return:
+        """
+        rngs = self._make_rngs()
+        return self._j_pm__call__(x, rngs, self.state.params, train, **kwargs)
