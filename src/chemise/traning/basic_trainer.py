@@ -443,6 +443,7 @@ class BasicTrainer:
         val_data_iter = Prefetch(val_data, buffer_size=FLAGS.prefetch_buffer, batch_dims=self.batch_dims,
                                  train=False, on_dev_shape=self.on_dev_shape) if val_data else None
 
+        mets = None
         for e in range(self.num_epochs):
             logging.debug("Starting epoch %d", e)
             epoch_start_time = time.monotonic()
@@ -490,6 +491,13 @@ class BasicTrainer:
                 logging.info(f"Epoch: {e} - {nl_d} {duration}  {met}")
 
         callbacks.on_fit_end(self)
+        if mets is not None:
+            # logging.info(make_metric_string({"Opt step": np.array(self.state.step)}))
+            met = make_metric_string(mets)
+            duration = time.monotonic() - setup_start_time
+            duration = seconds_pretty(duration)
+            logging.info(f"Final: {duration}  {met}")
+
         if self.train_window:
             live.stop()  # Close the live window since we aren't in a contex
         return
